@@ -1,0 +1,49 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.out
+
+# Go build artifacts
+bin/
+dist/
+
+# Test binary and coverage
+*.test
+*.cover
+*.out
+coverage.html
+coverage.txt
+
+# Dependency directories
+vendor/
+
+# IDE and editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Debug files
+debug
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
