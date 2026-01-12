@@ -1,0 +1,21 @@
+# Tasks
+
+- [ ] Complete System Specification
+    - [/] Core Architecture (`ARCHITECTURE.md`)
+    - [/] Module Strategy (`SPECIFICATION.md`)
+    - [/] Root Node Construction (`DESIGN.md`)
+- [x] Scaffold Child Modules (Document Down)
+    - [x] Kernel
+    - [x] WORM (NATS) Using SeaweedFS Notification
+    - [x] VFS-Service (SeaweedFS Gateway)
+    - [x] SSR
+    - [x] Factotum
+- [x] Define Node Specifications (Document Down)
+    - [x] pkg/9p
+    - [x] Kernel
+    - [x] VFS
+    - [x] SSR
+    - [x] Factotum
+    - [x] WORM
+- [ ] Implementation (Implement Up)
+    - [ ] TBD
