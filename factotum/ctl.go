@@ -70,12 +70,21 @@ func (c *Ctl) handleKey(parts []string) (string, error) {
 
 	case "ssh":
 		// SSH keys are stored as-is (text)
-		// Find the key after proto= and user=
-		keyStart := strings.Index(string(parts[len(parts)-1]), " ")
-		if keyStart == -1 {
+		// The key consists of all parts that are not parameters (key=value).
+		// We assume parameters come first or are distinct from the key parts (which don't contain '=').
+		startIdx := -1
+		for i, p := range parts {
+			if !strings.Contains(p, "=") {
+				startIdx = i
+				break
+			}
+		}
+
+		if startIdx == -1 {
 			return "", errors.New("ssh key required")
 		}
-		sshKey := parts[len(parts)-1]
+
+		sshKey := strings.Join(parts[startIdx:], " ")
 		if err := c.keyring.SaveUserKey(user, []byte(sshKey)); err != nil {
 			return "", err
 		}
