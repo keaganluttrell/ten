@@ -81,3 +81,15 @@ This document outlines the known architectural flaws, protocol gaps, and securit
     - [ ] Implement `mail` (Messaging) using `/mail` fs.
     - [/] Productionize `ssr` (Web Desktop) to render these apps.
         - [x] Implement minimal read-only file explorer.
+
+## 8. Production Infrastructure
+- [ ] **Deficiency**: System lacks cloud-native storage, secure transport, and browser integration.
+    - [ ] **Persistence**: Implement SeaweedFS backend for `vfs`.
+    - [ ] **Networking**: Implement WebSocket transport (`ws!`) in Kernel for browser clients.
+    - [ ] **Identity**: Implement WebAuthn ceremony in `factotum` (via `/rpc`).
+    - [ ] **Permissions**: Implement `/adm/users` hierarchy enforcement.
+    - [ ] **Client**:
+        - [ ] Create minimal Vanilla JS 9P client.
+        - [ ] Implement Service Worker (PWA) for app-like experience.
+        - [ ] Integrate WebAuthn for passwordless login.
+        - [ ] Store Auth Ticket in Browser Filesystem (OPFS).
