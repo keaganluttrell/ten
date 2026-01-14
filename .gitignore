@@ -49,4 +49,4 @@ temp/
 *.tmp
 
 #  Data
-.data/
+.data/*
