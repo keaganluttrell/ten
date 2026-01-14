@@ -145,6 +145,12 @@ func main() {
 				continue
 			}
 			shell.chown(args[1], args[2])
+		case "chgrp":
+			if len(args) < 3 {
+				fmt.Println("Usage: chgrp <group> <path>")
+				continue
+			}
+			shell.chgrp(args[1], args[2])
 		case "cp":
 			if len(args) < 3 {
 				fmt.Println("Usage: cp <src> <dst>")
@@ -489,6 +495,32 @@ func (s *Shell) chown(user, p string) {
 
 	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twstat, Fid: fid, Stat: dummyDir.Bytes()}); err != nil {
 		fmt.Printf("chown: failed: %v\n", err)
+	}
+}
+
+func (s *Shell) chgrp(group, p string) {
+	target := s.absPath(p)
+	fid := s.client.NextFid()
+	parts := strings.Split(strings.Trim(target, "/"), "/")
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: fid, Wname: parts}); err != nil {
+		fmt.Printf("chgrp: %v\n", err)
+		return
+	}
+	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: fid})
+
+	dummyDir := p9.Dir{
+		Mode:   0xFFFFFFFF,
+		Length: 0xFFFFFFFFFFFFFFFF, // Ignore
+		Mtime:  0xFFFFFFFF,
+		Atime:  0xFFFFFFFF,
+		Uid:    "", // Ignore
+		Gid:    group,
+		Muid:   "", // Ignore
+	}
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twstat, Fid: fid, Stat: dummyDir.Bytes()}); err != nil {
+		fmt.Printf("chgrp: failed: %v\n", err)
 	}
 }
 
