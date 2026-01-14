@@ -24,8 +24,14 @@ This document outlines the known architectural flaws, protocol gaps, and securit
 
 ### 2.1 Missing `Twstat` (Metadata Modification)
 - [x] **Deficiency**: The VFS service does not implement `Twstat`.
-    - [x] Implement `Twstat` in VFS (Rename, Chmod, Touch).
-    - [x] Verify `mv`, `chmod` commands work via Kernel.
+    - [ ] Implement `Twstat` in VFS (Rename, Chmod, Touch).
+    - [ ] Verify `mv`, `chmod` commands work via Kernel.
+
+### 2.3 System Lifecycle & Administration
+- [ ] **Deficiency**: No CLI tools for basic file/user management.
+    - [ ] Implement `touch`, `mkdir`, `rm` in `rc`.
+    - [ ] Implement `chmod`, `chown` in `rc`.
+    - [ ] Implement `/adm/users` for user management.
 
 ### 2.2 Mount Boundary Traversal (`..`)
 - [x] **Deficiency**: The Kernel's `Twalk` implementation does not robustly handle backward traversal (`..`).

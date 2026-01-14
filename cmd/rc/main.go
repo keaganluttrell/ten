@@ -115,6 +115,42 @@ func main() {
 				continue
 			}
 			shell.mount(args[1], args[2], args[3:])
+		case "mkdir":
+			if len(args) < 2 {
+				fmt.Println("Usage: mkdir <path>")
+				continue
+			}
+			shell.mkdir(args[1])
+		case "touch":
+			if len(args) < 2 {
+				fmt.Println("Usage: touch <path>")
+				continue
+			}
+			shell.touch(args[1])
+		case "rm":
+			if len(args) < 2 {
+				fmt.Println("Usage: rm <path>")
+				continue
+			}
+			shell.rm(args[1])
+		case "chmod":
+			if len(args) < 3 {
+				fmt.Println("Usage: chmod <mode> <path>")
+				continue
+			}
+			shell.chmod(args[1], args[2])
+		case "chown":
+			if len(args) < 3 {
+				fmt.Println("Usage: chown <user> <path>")
+				continue
+			}
+			shell.chown(args[1], args[2])
+		case "cp":
+			if len(args) < 3 {
+				fmt.Println("Usage: cp <src> <dst>")
+				continue
+			}
+			shell.cp(args[1], args[2])
 		default:
 			fmt.Printf("rc: %s: command not found\n", cmd)
 		}
@@ -307,4 +343,207 @@ func (s *Shell) bind(args []string) {
 func (s *Shell) mount(addr, p string, flags []string) {
 	cmd := fmt.Sprintf("mount %s %s %s", addr, p, strings.Join(flags, " "))
 	s.write("/dev/sys/ctl", cmd)
+}
+
+func (s *Shell) mkdir(p string) {
+	target := s.absPath(p)
+	parent := path.Dir(target)
+	base := path.Base(target)
+
+	// Walk to parent
+	fid := s.client.NextFid()
+	parts := strings.Split(strings.Trim(parent, "/"), "/")
+	if parent == "/" {
+		parts = []string{}
+	}
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: fid, Wname: parts}); err != nil {
+		fmt.Printf("mkdir: %v\n", err)
+		return
+	}
+	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: fid})
+
+	// Create
+	perm := p9.DMDIR | 0755
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Tcreate, Fid: fid, Name: base, Perm: uint32(perm), Mode: 0}); err != nil {
+		fmt.Printf("mkdir: create failed: %v\n", err)
+	}
+}
+
+func (s *Shell) touch(p string) {
+	target := s.absPath(p)
+	parent := path.Dir(target)
+	base := path.Base(target)
+
+	// Check if exists first? Or just try create.
+	// If we Create existing, 9P spec says it fails.
+	// So we should Walk to it first to check existence to support "update mtime" feature or just ignore.
+	// For now, let's just try Create.
+
+	// Walk to parent
+	fid := s.client.NextFid()
+	parts := strings.Split(strings.Trim(parent, "/"), "/")
+	if parent == "/" {
+		parts = []string{}
+	}
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: fid, Wname: parts}); err != nil {
+		fmt.Printf("touch: %v\n", err)
+		return
+	}
+	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: fid})
+
+	// Create
+	perm := 0644
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Tcreate, Fid: fid, Name: base, Perm: uint32(perm), Mode: 1}); err != nil {
+		// If fail, maybe it exists?
+		// We could Twstat to update mtime, but let's accept failure for MVP.
+		fmt.Printf("touch: create failed: %v\n", err)
+	}
+}
+
+func (s *Shell) rm(p string) {
+	target := s.absPath(p)
+	fid := s.client.NextFid()
+	parts := strings.Split(strings.Trim(target, "/"), "/")
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: fid, Wname: parts}); err != nil {
+		fmt.Printf("rm: %v\n", err)
+		return
+	}
+	// Tremove implicitly clunks (or invalidates) the fid
+	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: fid})
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Tremove, Fid: fid}); err != nil {
+		fmt.Printf("rm: failed: %v\n", err)
+	}
+}
+
+func (s *Shell) chmod(modeStr, p string) {
+	// Parse mode
+	var mode uint32
+	// Simple parsing: octal
+	fmt.Sscanf(modeStr, "%o", &mode)
+
+	target := s.absPath(p)
+	fid := s.client.NextFid()
+	parts := strings.Split(strings.Trim(target, "/"), "/")
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: fid, Wname: parts}); err != nil {
+		fmt.Printf("chmod: %v\n", err)
+		return
+	}
+	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: fid})
+
+	// Get current Stat to preserve type/length
+	statResp, err := s.client.RPC(&p9.Fcall{Type: p9.Tstat, Fid: fid})
+	if err != nil {
+		fmt.Printf("chmod: stat failed: %v\n", err)
+		return
+	}
+
+	dir, _, err := p9.UnmarshalDir(statResp.Stat)
+	if err != nil {
+		fmt.Printf("chmod: unmarshal failed: %v\n", err)
+		return
+	}
+
+	// Update Mode
+	// Preserve Type bits (DMDIR etc) from old mode and apply new perm bits
+	newMode := (dir.Mode &^ 0777) | (mode & 0777)
+
+	// Create request
+	dummyDir := p9.Dir{
+		Mode:   newMode,
+		Length: 0xFFFFFFFFFFFFFFFF, // Ignore
+		Mtime:  0xFFFFFFFF,
+		Atime:  0xFFFFFFFF,
+	}
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twstat, Fid: fid, Stat: dummyDir.Bytes()}); err != nil {
+		fmt.Printf("chmod: failed: %v\n", err)
+	}
+}
+
+func (s *Shell) chown(user, p string) {
+	// Plan 9 uses strings for users
+	target := s.absPath(p)
+	fid := s.client.NextFid()
+	parts := strings.Split(strings.Trim(target, "/"), "/")
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: fid, Wname: parts}); err != nil {
+		fmt.Printf("chown: %v\n", err)
+		return
+	}
+	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: fid})
+
+	dummyDir := p9.Dir{
+		Mode:   0xFFFFFFFF,
+		Length: 0xFFFFFFFFFFFFFFFF, // Ignore
+		Mtime:  0xFFFFFFFF,
+		Atime:  0xFFFFFFFF,
+		Uid:    user,
+		Gid:    "", // Ignore
+		Muid:   "", // Ignore
+	}
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twstat, Fid: fid, Stat: dummyDir.Bytes()}); err != nil {
+		fmt.Printf("chown: failed: %v\n", err)
+	}
+}
+
+func (s *Shell) cp(srcPath, dstPath string) {
+	// Source
+	srcTarget := s.absPath(srcPath)
+	srcFid := s.client.NextFid()
+	srcParts := strings.Split(strings.Trim(srcTarget, "/"), "/")
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: srcFid, Wname: srcParts}); err != nil {
+		fmt.Printf("cp: src error: %v\n", err)
+		return
+	}
+	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: srcFid})
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Topen, Fid: srcFid, Mode: 0}); err != nil {
+		fmt.Printf("cp: src open failed: %v\n", err)
+		return
+	}
+
+	// Dest
+	dstTarget := s.absPath(dstPath)
+	dstParent := path.Dir(dstTarget)
+	dstBase := path.Base(dstTarget)
+
+	dstFid := s.client.NextFid()
+	dstParts := strings.Split(strings.Trim(dstParent, "/"), "/")
+	if dstParent == "/" {
+		dstParts = []string{}
+	}
+
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: dstFid, Wname: dstParts}); err != nil {
+		fmt.Printf("cp: dst parent error: %v\n", err)
+		return
+	}
+	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: dstFid})
+
+	// Create dest file
+	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Tcreate, Fid: dstFid, Name: dstBase, Perm: 0644, Mode: 1}); err != nil {
+		fmt.Printf("cp: create failed (overwrite not impl): %v\n", err)
+		return
+	}
+
+	// Copy Loop
+	offset := uint64(0)
+	for {
+		readResp, err := s.client.RPC(&p9.Fcall{Type: p9.Tread, Fid: srcFid, Offset: offset, Count: 8192})
+		if err != nil || len(readResp.Data) == 0 {
+			break
+		}
+
+		if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twrite, Fid: dstFid, Offset: offset, Count: uint32(len(readResp.Data)), Data: readResp.Data}); err != nil {
+			fmt.Printf("cp: write error: %v\n", err)
+			break
+		}
+		offset += uint64(len(readResp.Data))
+	}
 }
