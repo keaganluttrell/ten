@@ -1,3 +1,0 @@
-mount / tcp!localhost:9001
-mount -b /dev/factotum tcp!localhost:9002
-mount /proc tcp!localhost:9004

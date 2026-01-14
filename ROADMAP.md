@@ -84,6 +84,8 @@ This document outlines the known architectural flaws, protocol gaps, and securit
 
 ## 8. Production Infrastructure
 - [ ] **Deficiency**: System lacks cloud-native storage, secure transport, and browser integration.
+    - [ ] **Deployment**: Dockerize services (Kernel, VFS, Factotum, SSR).
+    - [ ] **Orchestration**: Create `docker-compose.yml` with SeaweedFS & NATS.
     - [ ] **Persistence**: Implement SeaweedFS backend for `vfs`.
     - [ ] **Networking**: Implement WebSocket transport (`ws!`) in Kernel for browser clients.
     - [ ] **Identity**: Implement WebAuthn ceremony in `factotum` (via `/rpc`).
