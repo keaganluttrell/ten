@@ -181,6 +181,10 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 		sysClient := NewSysClient(s.ns, s.dialer)
 		s.ns.Mount("/dev/sys", sysClient, MREPL)
 
+		// Mount /env
+		envClient := NewEnvClient()
+		s.ns.Mount("/env", envClient, MREPL)
+
 		// Attach to Root
 		rootStack := s.ns.Route("/")
 		if len(rootStack) == 0 {

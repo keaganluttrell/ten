@@ -91,11 +91,15 @@ start_services() {
     KERNEL_PID=$!
     
     sleep 1
+
+    log "Starting SSR on :8080..."
+    ./bin/ssr -addr :8080 &
+    SSR_PID=$!
 }
 
 cleanup() {
     log "Shutting down..."
-    kill $VFS_PID $FACT_PID $KERNEL_PID 2>/dev/null || true
+    kill $VFS_PID $FACT_PID $KERNEL_PID $SSR_PID 2>/dev/null || true
     wait
 }
 
@@ -106,6 +110,7 @@ generate_keys
 start_services
 
 log "System Ready."
+log "Web Explorer: http://localhost:8080/"
 log "Use './bin/rc' to connect."
 log "Press Ctrl+C to stop."
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/keaganluttrell/ten/kernel"
@@ -83,11 +84,11 @@ func main() {
 				shell.cd("/")
 			}
 		case "ls":
-			path := shell.cwd
+			p := shell.cwd
 			if len(args) > 1 {
-				path = shell.absPath(args[1])
+				p = shell.absPath(args[1])
 			}
-			shell.ls(path)
+			shell.ls(p)
 		case "cat":
 			if len(args) > 1 {
 				shell.cat(shell.absPath(args[1]))
@@ -130,8 +131,8 @@ func (s *Shell) absPath(p string) string {
 	return s.cwd + "/" + p
 }
 
-func (s *Shell) cd(path string) {
-	target := s.absPath(path)
+func (s *Shell) cd(p string) {
+	target := s.absPath(p)
 
 	// Verify target exists and is a directory
 	fid := s.client.NextFid()
@@ -153,7 +154,7 @@ func (s *Shell) cd(path string) {
 	}
 
 	if len(resp.Wqid) != len(parts) {
-		fmt.Printf("cd: %s: not found\n", path)
+		fmt.Printf("cd: %s: not found\n", p)
 		return
 	}
 
@@ -164,18 +165,18 @@ func (s *Shell) cd(path string) {
 	}
 
 	if lastQid.Type&p9.QTDIR == 0 {
-		fmt.Printf("cd: %s: not a directory\n", path)
+		fmt.Printf("cd: %s: not a directory\n", p)
 		return
 	}
 
 	// Success
-	s.cwd = target
+	s.cwd = path.Clean(target)
 }
 
-func (s *Shell) ls(path string) {
-	fmt.Printf("DEBUG: ls %s detected (BinVer: 1)\n", path)
+func (s *Shell) ls(p string) {
+	fmt.Printf("DEBUG: ls %s detected (BinVer: 1)\n", p)
 	fid := s.client.NextFid()
-	target := s.absPath(path)
+	target := s.absPath(p)
 	parts := strings.Split(strings.Trim(target, "/"), "/")
 	if target == "/" {
 		parts = []string{}
@@ -194,7 +195,7 @@ func (s *Shell) ls(path string) {
 	defer s.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: fid})
 
 	if len(resp.Wqid) != len(parts) {
-		fmt.Printf("ls: %s not found\n", path)
+		fmt.Printf("ls: %s not found\n", p)
 		return
 	}
 
@@ -243,9 +244,9 @@ func (s *Shell) ls(path string) {
 	fmt.Println()
 }
 
-func (s *Shell) cat(path string) {
+func (s *Shell) cat(p string) {
 	fid := s.client.NextFid()
-	target := s.absPath(path)
+	target := s.absPath(p)
 	parts := strings.Split(strings.Trim(target, "/"), "/")
 
 	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: fid, Wname: parts}); err != nil {
@@ -276,9 +277,9 @@ func (s *Shell) cat(path string) {
 	fmt.Println()
 }
 
-func (s *Shell) write(path, content string) {
+func (s *Shell) write(p, content string) {
 	fid := s.client.NextFid()
-	target := s.absPath(path)
+	target := s.absPath(p)
 	parts := strings.Split(strings.Trim(target, "/"), "/")
 
 	if _, err := s.client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: s.cwdFid, Newfid: fid, Wname: parts}); err != nil {
@@ -303,7 +304,7 @@ func (s *Shell) bind(args []string) {
 	s.write("/dev/sys/ctl", cmd)
 }
 
-func (s *Shell) mount(addr, path string, flags []string) {
-	cmd := fmt.Sprintf("mount %s %s %s", addr, path, strings.Join(flags, " "))
+func (s *Shell) mount(addr, p string, flags []string) {
+	cmd := fmt.Sprintf("mount %s %s %s", addr, p, strings.Join(flags, " "))
 	s.write("/dev/sys/ctl", cmd)
 }

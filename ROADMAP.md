@@ -64,13 +64,14 @@ This document outlines the known architectural flaws, protocol gaps, and securit
     - [x] Implement `tools/dev.sh` (Bootstrap script).
     - [x] Auto-generate keys and directories.
 
-- [ ] **Deficiency**: No interactive shell or process management.
+- [x] **Deficiency**: No interactive shell or process management.
     - [x] Implement `rc` (Shell) as a standalone client.
     - [x] Implement `proc` file system (Process table).
-    - [ ] Implement environment variable file interface (`/env`).
+    - [x] Implement environment variable file interface (`/env`).
 
 ## 7. Application Layer
 - [ ] **Deficiency**: No useful applications running on the OS.
     - [ ] Implement `cron` (Scheduler) using `/dev/cons`.
     - [ ] Implement `mail` (Messaging) using `/mail` fs.
-    - [ ] Productionize `ssr` (Web Desktop) to render these apps.
+    - [/] Productionize `ssr` (Web Desktop) to render these apps.
+        - [x] Implement minimal read-only file explorer.
