@@ -25,14 +25,12 @@ Ten is a pure Plan 9 web framework. It connects a Client (Browser) to a Storage 
 - **Architecture**: A Standalone Go Binary.
 - **Backing Store**: **SeaweedFS Filer** (Locked In).
 - **Integration**: 
-    - Mounts SeaweedFS via FUSE or S3 API.
+    - connects to **SeaweedFS Filer** via HTTP (REST).
+    - Acts like `ftpfs`: translates 9P -> Filer API.
     - Listens on TCP. Serves 9P.
 - **History (WORM)**:
-    - **S3 Object Versioning** enabled on all buckets.
-    - Every write creates a new version. Old versions are retained.
-    - History query via `ListObjectVersions` API.
-- **Events**:
-    - SeaweedFS Filer pushes changes to NATS (optional, for real-time updates).
+    - Queries Filer for version history.
+    - Every write creates a new version.
 - **Responsibility**: 
     - Abstracts Storage from Kernel.
     - Provides per-file version history.

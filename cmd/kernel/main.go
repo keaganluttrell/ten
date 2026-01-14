@@ -9,9 +9,12 @@ import (
 )
 
 func main() {
+	// Address Flags
 	addr := flag.String("addr", ":8080", "Address to listen on")
 	vfsAddr := flag.String("vfs", "vfs-service:9002", "Address of VFS service")
+	wsAddr := flag.String("ws", ":9009", "Address for WebSocket listener (Env: WS_ADDR)")
 	keyPath := flag.String("key", "/priv/factotum/signing.key", "Path to signing key")
+
 	// env is passed but StartServer signature might not take it? Checking main.go signature, it takes 3 args.
 	// Check dev.sh: uses -env "dev".
 	// We need to see if kernel.StartServer accepts env.
@@ -25,17 +28,20 @@ func main() {
 	flag.Parse()
 
 	// Env fallback
-	if v := os.Getenv("LISTEN_ADDR"); v != "" && !isFlagPassed("addr") {
+	if v := os.Getenv("ADDR"); v != "" && !isFlagPassed("addr") {
 		*addr = v
 	}
 	if v := os.Getenv("VFS_ADDR"); v != "" && !isFlagPassed("vfs") {
 		*vfsAddr = v
 	}
+	if v := os.Getenv("WS_ADDR"); v != "" && !isFlagPassed("ws") {
+		*wsAddr = v
+	}
 	if v := os.Getenv("SIGNING_KEY_PATH"); v != "" && !isFlagPassed("key") {
 		*keyPath = v
 	}
 
-	if err := kernel.StartServer(*addr, *vfsAddr, *keyPath); err != nil {
+	if err := kernel.StartServer(*addr, *vfsAddr, *wsAddr, *keyPath); err != nil {
 		log.Fatal(err)
 	}
 }

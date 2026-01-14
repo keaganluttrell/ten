@@ -6,19 +6,30 @@ import (
 	"encoding/base64"
 	"log"
 	"net"
+	"net/http"
 	"os"
 
 	p9 "github.com/keaganluttrell/ten/pkg/9p"
 )
 
-// StartServer starts the Kernel TCP server.
-func StartServer(listenAddr, vfsAddr, keyPath string) error {
+// StartServer starts the Kernel TCP and WebSocket servers.
+func StartServer(listenAddr, vfsAddr, wsAddr, keyPath string) error {
 	pubKey := loadPublicKey(keyPath)
 	host, err := LoadHostIdentity()
 	if err != nil {
 		log.Printf("Warning: Failed to load Host Identity: %v. Bootstrapping will invoke Tauth failure handling.", err)
 	}
 
+	dialer := NewNetworkDialer()
+
+	// 1. Start WebSocket Server (HTTP)
+	go func() {
+		if err := StartWebSocketServer(wsAddr, vfsAddr, pubKey, host, dialer); err != nil {
+			log.Printf("WebSocket server failed: %v", err)
+		}
+	}()
+
+	// 2. Start TCP Server
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return err
@@ -31,8 +42,6 @@ func StartServer(listenAddr, vfsAddr, keyPath string) error {
 			log.Printf("ProcFS failed: %v", err)
 		}
 	}()
-
-	dialer := NewNetworkDialer()
 
 	for {
 		conn, err := ln.Accept()
@@ -47,6 +56,24 @@ func StartServer(listenAddr, vfsAddr, keyPath string) error {
 			sess.Serve()
 		}(conn)
 	}
+}
+
+// StartWebSocketServer starts the HTTP server for WebSocket upgrades.
+func StartWebSocketServer(addr, vfsAddr string, pubKey ed25519.PublicKey, host *HostIdentity, dialer *NetworkDialer) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		socket, err := Upgrade(w, r)
+		if err != nil {
+			log.Printf("WS Upgrade failed: %v", err)
+			return
+		}
+		// Bridge Socket to Session
+		sess := NewSession(socket, vfsAddr, pubKey, host, dialer)
+		sess.Serve()
+	})
+
+	log.Printf("Kernel listening on %s (WebSocket /ws)", addr)
+	return http.ListenAndServe(addr, mux)
 }
 
 type TCPTransport struct {

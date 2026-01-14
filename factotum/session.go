@@ -16,12 +16,13 @@ type Sessions struct {
 
 // Session represents one authentication dialogue.
 type Session struct {
-	FID       uint32
-	User      string
-	Role      string // "register" | "auth"
-	State     string // "start" | "challenged" | "done"
-	Challenge []byte // ephemeral, never persisted
-	WebAuthn  *webauthn.SessionData
+	FID               uint32
+	User              string
+	Role              string // "register" | "auth"
+	State             string // "start" | "challenged" | "done"
+	Challenge         []byte // ephemeral, never persisted (legacy)
+	SessionData       *webauthn.SessionData
+	CredentialOptions interface{} // *protocol.CredentialCreation or *protocol.CredentialAssertion
 }
 
 // NewSessions creates a new session store.

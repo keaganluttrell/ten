@@ -15,7 +15,7 @@ func TestRPC_Start(t *testing.T) {
 	tempDir := t.TempDir()
 	kr, _ := NewKeyring(tempDir)
 
-	rpc := NewRPC(sessions, kr, "")
+	rpc := NewRPC(sessions, kr, "", nil)
 	fid := uint32(100)
 
 	// 1. Open session
@@ -92,7 +92,7 @@ func TestRPC_Write_And_Read_Flow(t *testing.T) {
 	kr, _ := NewKeyring(tempDir)
 
 	vfsAddr := startMockVFS(t)
-	rpc := NewRPC(sessions, kr, vfsAddr)
+	rpc := NewRPC(sessions, kr, vfsAddr, nil)
 	fid := uint32(200)
 
 	// Initialize to challenged state
@@ -120,7 +120,7 @@ func TestRPC_Write_And_Read_Flow(t *testing.T) {
 
 func TestRPC_InvalidFlows(t *testing.T) {
 	sessions := NewSessions()
-	rpc := NewRPC(sessions, nil, "")
+	rpc := NewRPC(sessions, nil, "", nil)
 	fid := uint32(999)
 
 	// Write to non-existent session

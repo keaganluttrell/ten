@@ -9,13 +9,13 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":9002", "Address to listen on (Env: LISTEN_ADDR)")
+	addr := flag.String("addr", ":9001", "Address to listen on (Env: ADDR)")
 	root := flag.String("root", "/tmp/ten-data", "Data root directory (Env: DATA_ROOT)")
 	authKey := flag.String("auth", "", "Trusted host public key (Env: TRUSTED_KEY)")
 	flag.Parse()
 
 	// Env var override (optional, or prefer flags)
-	if v := os.Getenv("LISTEN_ADDR"); v != "" && !isFlagPassed("addr") {
+	if v := os.Getenv("ADDR"); v != "" && !isFlagPassed("addr") {
 		*addr = v
 	}
 	if v := os.Getenv("DATA_ROOT"); v != "" && !isFlagPassed("root") {

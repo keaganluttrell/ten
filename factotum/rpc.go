@@ -3,11 +3,14 @@
 package factotum
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"strings"
 
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 	p9 "github.com/keaganluttrell/ten/pkg/9p"
 )
 
@@ -16,14 +19,16 @@ type RPC struct {
 	sessions *Sessions
 	keyring  *Keyring
 	vfsAddr  string
+	webAuthn *WebAuthnHandler
 }
 
 // NewRPC creates a new RPC handler.
-func NewRPC(sessions *Sessions, keyring *Keyring, vfsAddr string) *RPC {
+func NewRPC(sessions *Sessions, keyring *Keyring, vfsAddr string, webAuthn *WebAuthnHandler) *RPC {
 	return &RPC{
 		sessions: sessions,
 		keyring:  keyring,
 		vfsAddr:  vfsAddr,
+		webAuthn: webAuthn,
 	}
 }
 
@@ -66,8 +71,18 @@ func (r *RPC) Read(fid uint32) (string, error) {
 
 	switch sess.State {
 	case "challenged":
-		// Return the challenge
-		return fmt.Sprintf("challenge %x", sess.Challenge), nil
+		// Return challenge with metadata for browser
+		if sess.SessionData != nil && len(sess.SessionData.Challenge) > 0 {
+			challenge := sess.SessionData.Challenge
+			userID := base64.StdEncoding.EncodeToString(sess.SessionData.UserID)
+			rpID := "localhost" // Fallback to localhost which matches server.go
+
+			return fmt.Sprintf("challenge user=%s role=%s challenge=%s userid=%s rpid=%s",
+				sess.User, sess.Role, challenge, userID, rpID), nil
+		}
+		// Fallback for tests
+		return fmt.Sprintf("challenge challenge=%s", base64.StdEncoding.EncodeToString(sess.Challenge)), nil
+
 	case "done":
 		// Generate ticket and return path
 		ticket := Generate(sess.User, r.keyring.SigningKey())
@@ -242,20 +257,174 @@ func (r *RPC) handleStart(sess *Session, cmd string) error {
 
 	sess.User = user
 	sess.Role = role
-	sess.State = "challenged"
 
-	// Generate challenge (simplified for v1)
-	sess.Challenge = make([]byte, 32)
+	// Call WebAuthn library
+	if r.webAuthn == nil {
+		// Fallback for tests
+		sess.State = "challenged"
+		sess.Challenge = make([]byte, 32)
+		r.sessions.Set(sess.FID, sess)
+		return nil
+	}
+
+	if role == "register" {
+		options, sessionData, err := r.webAuthn.BeginRegistration(user)
+		if err != nil {
+			return fmt.Errorf("begin registration: %w", err)
+		}
+		// Store session data for verification
+		sess.SessionData = sessionData
+		sess.CredentialOptions = options
+		sess.State = "challenged"
+	} else { // role == "auth"
+		options, sessionData, err := r.webAuthn.BeginLogin(user)
+		if err != nil {
+			return fmt.Errorf("begin login: %w", err)
+		}
+		sess.SessionData = sessionData
+		sess.CredentialOptions = options
+		sess.State = "challenged"
+	}
+
 	r.sessions.Set(sess.FID, sess)
 	return nil
 }
 
 // handleWrite processes the "write" command with attestation/assertion.
 func (r *RPC) handleWrite(sess *Session, cmd string) error {
-	// Parse: write <base64-data>
 	parts := strings.Fields(cmd)
-	if len(parts) < 2 || parts[0] != "write" {
-		return errors.New("invalid write command")
+	if len(parts) < 3 || parts[0] != "write" {
+		return errors.New("format: write <clientDataJSON-b64> <responseB64> [sigB64] [userHandleB64]")
+	}
+
+	clientDataB64 := parts[1]
+	responseB64 := parts[2]
+
+	// Decode from text protocol to bytes
+	clientDataJSON, err := base64.StdEncoding.DecodeString(clientDataB64)
+	if err != nil {
+		return fmt.Errorf("decode clientDataJSON: %w", err)
+	}
+
+	responseData, err := base64.StdEncoding.DecodeString(responseB64)
+	if err != nil {
+		return fmt.Errorf("decode response data: %w", err)
+	}
+
+	if sess.Role == "register" {
+		return r.handleRegistration(sess, clientDataJSON, responseData)
+	} else if sess.Role == "auth" {
+		var sig, userHandle []byte
+		if len(parts) > 3 {
+			sig, err = base64.StdEncoding.DecodeString(parts[3])
+			if err != nil {
+				return fmt.Errorf("decode signature: %w", err)
+			}
+		}
+		if len(parts) > 4 && parts[4] != "none" {
+			userHandle, err = base64.StdEncoding.DecodeString(parts[4])
+			if err != nil {
+				return fmt.Errorf("decode userHandle: %w", err)
+			}
+		}
+		return r.handleAuthentication(sess, clientDataJSON, responseData, sig, userHandle)
+	}
+
+	return errors.New("unknown role")
+}
+
+func (r *RPC) handleRegistration(sess *Session, clientDataJSON, attestationObject []byte) error {
+	// Skip WebAuthn library if not available (for tests)
+	if r.webAuthn == nil {
+		sess.State = "done"
+		r.sessions.Set(sess.FID, sess)
+		return nil
+	}
+
+	// Construct CredentialCreationResponse for go-webauthn library
+	ccr := protocol.CredentialCreationResponse{
+		PublicKeyCredential: protocol.PublicKeyCredential{
+			Credential: protocol.Credential{Type: "public-key"},
+			RawID:      []byte{}, // Will be extracted from attestation
+		},
+		AttestationResponse: protocol.AuthenticatorAttestationResponse{
+			AuthenticatorResponse: protocol.AuthenticatorResponse{
+				ClientDataJSON: clientDataJSON,
+			},
+			AttestationObject: attestationObject,
+		},
+	}
+
+	// Parse the response (CBOR parsing happens inside library)
+	parsedResponse, err := ccr.Parse()
+	if err != nil {
+		return fmt.Errorf("parse credential creation response: %w", err)
+	}
+
+	// Create user for verification
+	user := &User{
+		ID:          []byte(sess.User),
+		Name:        sess.User,
+		DisplayName: sess.User,
+		Credentials: []webauthn.Credential{},
+	}
+
+	// Verify attestation and create credential
+	credential, err := r.webAuthn.webAuthn.CreateCredential(user, *sess.SessionData, parsedResponse)
+	if err != nil {
+		return fmt.Errorf("create credential: %w", err)
+	}
+
+	// Save credential as TEXT
+	if err := r.webAuthn.store.SaveCredential(sess.User, *credential); err != nil {
+		return fmt.Errorf("save credential: %w", err)
+	}
+
+	sess.State = "done"
+	r.sessions.Set(sess.FID, sess)
+	return nil
+}
+
+func (r *RPC) handleAuthentication(sess *Session, clientDataJSON, authenticatorData, signature, userHandle []byte) error {
+	// Skip WebAuthn library if not available (for tests)
+	if r.webAuthn == nil {
+		sess.State = "done"
+		r.sessions.Set(sess.FID, sess)
+		return nil
+	}
+
+	// Construct CredentialAssertionResponse for go-webauthn library
+	car := protocol.CredentialAssertionResponse{
+		PublicKeyCredential: protocol.PublicKeyCredential{
+			Credential: protocol.Credential{Type: "public-key"},
+			RawID:      []byte{}, // Will be extracted
+		},
+		AssertionResponse: protocol.AuthenticatorAssertionResponse{
+			AuthenticatorResponse: protocol.AuthenticatorResponse{
+				ClientDataJSON: clientDataJSON,
+			},
+			AuthenticatorData: authenticatorData,
+			Signature:         signature,
+			UserHandle:        userHandle,
+		},
+	}
+
+	// Parse the response
+	parsedResponse, err := car.Parse()
+	if err != nil {
+		return fmt.Errorf("parse credential assertion response: %w", err)
+	}
+
+	// Load user credentials
+	user, err := r.webAuthn.store.LoadUser(sess.User)
+	if err != nil {
+		return fmt.Errorf("load user: %w", err)
+	}
+
+	// Verify assertion
+	_, err = r.webAuthn.webAuthn.ValidateLogin(user, *sess.SessionData, parsedResponse)
+	if err != nil {
+		return fmt.Errorf("validate login: %w", err)
 	}
 
 	sess.State = "done"

@@ -1,13 +1,16 @@
 package main
 
 import (
+	_ "embed"
 	"flag"
 	"fmt"
 	"html"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/keaganluttrell/ten/kernel"
 	p9 "github.com/keaganluttrell/ten/pkg/9p"
@@ -18,37 +21,21 @@ var (
 	addr       = flag.String("addr", ":8080", "HTTP listen address")
 )
 
-type Gateway struct {
-	client  *kernel.Client
-	rootFid uint32
-}
+//go:embed index.html
+var indexHTML []byte
 
 func main() {
 	flag.Parse()
 
-	log.Printf("Connecting to Kernel at %s...", *kernelAddr)
-	dialer := kernel.NewNetworkDialer()
-	client, err := dialer.Dial(*kernelAddr)
-	if err != nil {
-		log.Fatalf("Failed to dial kernel: %v", err)
+	if v := os.Getenv("KERNEL_ADDR"); v != "" {
+		*kernelAddr = v
 	}
-	defer client.Close()
-
-	// Handshake
-	if _, err := client.RPC(&p9.Fcall{Type: p9.Tversion, Msize: 8192, Version: "9P2000"}); err != nil {
-		log.Fatalf("Version failed: %v", err)
+	if v := os.Getenv("ADDR"); v != "" {
+		*addr = v
 	}
-
-	// Attach
-	rootFid := client.NextFid()
-	if _, err := client.RPC(&p9.Fcall{Type: p9.Tattach, Fid: rootFid, Afid: p9.NOFID, Uname: "http", Aname: "/"}); err != nil {
-		log.Fatalf("Attach failed: %v", err)
-	}
-	log.Printf("Attached as 'http'")
 
 	gw := &Gateway{
-		client:  client,
-		rootFid: rootFid,
+		addr: *kernelAddr,
 	}
 
 	http.HandleFunc("/", gw.handle)
@@ -56,24 +43,79 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
-func (gw *Gateway) handle(w http.ResponseWriter, r *http.Request) {
-	reqPath := path.Clean(r.URL.Path)
-	parts := strings.Split(strings.Trim(reqPath, "/"), "/")
-	if reqPath == "/" {
-		parts = []string{}
+type Gateway struct {
+	addr    string
+	client  *kernel.Client
+	rootFid uint32
+	mu      sync.Mutex
+}
+
+func (gw *Gateway) getClient() (*kernel.Client, uint32, error) {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+
+	// If we have a client, try a quick ping (Tversion) to see if it's alive
+	if gw.client != nil {
+		_, err := gw.client.RPC(&p9.Fcall{Type: p9.Tversion, Msize: 8192, Version: "9P2000"})
+		if err == nil {
+			return gw.client, gw.rootFid, nil
+		}
+		log.Printf("Kernel connection lost, reconnecting...")
+		gw.client.Close()
+		gw.client = nil
 	}
 
+	// Dial
+	dialer := kernel.NewNetworkDialer()
+	client, err := dialer.Dial(gw.addr)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Handshake
+	if _, err := client.RPC(&p9.Fcall{Type: p9.Tversion, Msize: 8192, Version: "9P2000"}); err != nil {
+		client.Close()
+		return nil, 0, err
+	}
+
+	// Attach
+	rootFid := client.NextFid()
+	if _, err := client.RPC(&p9.Fcall{Type: p9.Tattach, Fid: rootFid, Afid: p9.NOFID, Uname: "http", Aname: "/"}); err != nil {
+		client.Close()
+		return nil, 0, err
+	}
+
+	gw.client = client
+	gw.rootFid = rootFid
+	return client, rootFid, nil
+}
+
+func (gw *Gateway) handle(w http.ResponseWriter, r *http.Request) {
+	client, rootFid, err := gw.getClient()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to connect to Kernel: %v", err), 503)
+		return
+	}
+
+	reqPath := path.Clean(r.URL.Path)
+	if reqPath == "/" || reqPath == "/index.html" {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write(indexHTML)
+		return
+	}
+	parts := strings.Split(strings.Trim(reqPath, "/"), "/")
+
 	// 1. Walk to target
-	targetFid := gw.client.NextFid()
+	targetFid := client.NextFid()
 
 	// We walk from rootFid to targetFid using parts
 	req := &p9.Fcall{
 		Type:   p9.Twalk,
-		Fid:    gw.rootFid,
+		Fid:    rootFid,
 		Newfid: targetFid,
 		Wname:  parts,
 	}
-	resp, err := gw.client.RPC(req)
+	resp, err := client.RPC(req)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("9P Error: %v", err), 500)
 		return
@@ -84,16 +126,11 @@ func (gw *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	// Verify full walk
 	if len(resp.Wqid) != len(parts) {
-		// Clunk the partial newfid?
-		// Actually if walk is partial (and not error), newfid is valid but points to partial path?
-		// No, standard says: "If the first element cannot be walked... Rerror. Otherwise... Rwalk containing n successful qids."
-		// If n < len(wname), the fid (newfid) represents the directory after n successful walks.
-		// So we must clunk it.
-		gw.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: targetFid})
+		client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: targetFid})
 		http.Error(w, "Not Found", 404)
 		return
 	}
-	defer gw.client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: targetFid})
+	defer client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: targetFid})
 
 	// 2. Stat (to check if Dir or File) -- actually we can check qid from walk resp?
 	// The last Qid in Wqid corresponds to the target file.

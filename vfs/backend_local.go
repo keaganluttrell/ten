@@ -2,24 +2,13 @@ package vfs
 
 import (
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	p9 "github.com/keaganluttrell/ten/pkg/9p"
 )
-
-// Backend abstracts the storage layer (SeaweedFS, S3, or Local).
-type Backend interface {
-	Stat(path string) (p9.Dir, error)
-	List(path string) ([]p9.Dir, error)
-	Open(path string, mode uint8) (io.ReadWriteCloser, error)
-	Create(path string, perm uint32, mode uint8) (io.ReadWriteCloser, error)
-	Remove(path string) error
-	Rename(oldPath, newPath string) error
-	Chmod(path string, mode uint32) error
-	Truncate(path string, size int64) error
-}
 
 // LocalBackend implements Backend using the local filesystem.
 type LocalBackend struct {
@@ -31,6 +20,8 @@ func NewLocalBackend(root string) (*LocalBackend, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Warning: MkdirAll might fail if path is a mount point that is RO?
+	// But /data is RW.
 	if err := os.MkdirAll(abs, 0755); err != nil {
 		return nil, err
 	}
@@ -57,34 +48,57 @@ func (b *LocalBackend) Stat(path string) (p9.Dir, error) {
 
 func (b *LocalBackend) List(path string) ([]p9.Dir, error) {
 	localPath := b.toLocal(path)
+	log.Printf("List: path=%s -> localPath=%s", path, localPath)
 	entries, err := os.ReadDir(localPath)
 	if err != nil {
+		log.Printf("List: ReadDir failed: %v", err)
 		return nil, err
 	}
 
+	log.Printf("List: Found %d entries", len(entries))
 	var dirs []p9.Dir
 	for _, e := range entries {
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
+		log.Printf("  - %s", info.Name())
 		dirs = append(dirs, fileInfoToDir(info))
 	}
+	log.Printf("List: Returning %d dirs", len(dirs))
 	return dirs, nil
 }
 
 func (b *LocalBackend) Open(path string, mode uint8) (io.ReadWriteCloser, error) {
 	localPath := b.toLocal(path)
-	// Map 9P mode to os flags (O_RDONLY etc)
-	// Simplified:
-	flag := os.O_RDWR // Default to RW
-	if mode == 0 {    // O_RDONLY? Plan 9 modes are: 0=Read, 1=Write, 2=RDWR
+	// Map 9P mode to os flags
+	// 9P: 0=Read, 1=Write, 2=RDWR
+	// We default to O_RDWR unless specifically ReadOnly,
+	// but Plan 9 Topen specifies mode.
+	flag := os.O_RDWR
+	if mode == 0 {
 		flag = os.O_RDONLY
 	} else if mode == 1 {
 		flag = os.O_WRONLY
 	}
+	// O_CREATE is handled in Create(), not Open()
 
-	return os.OpenFile(localPath, flag, 0)
+	f, err := os.OpenFile(localPath, flag, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if directory
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	if fi.IsDir() {
+		return &DirHandle{f: f}, nil
+	}
+	return f, nil
 }
 
 func (b *LocalBackend) Create(path string, perm uint32, mode uint8) (io.ReadWriteCloser, error) {
@@ -94,9 +108,11 @@ func (b *LocalBackend) Create(path string, perm uint32, mode uint8) (io.ReadWrit
 		if err := os.Mkdir(localPath, 0755); err != nil {
 			return nil, err
 		}
-		return nil, nil // Directories don't return an FD on create in Go usually, but 9P expects an open FID?
-		// Actually Tcreate returns an open FID.
-		// For directories, we just open it for reading.
+		f, err := os.Open(localPath)
+		if err != nil {
+			return nil, err
+		}
+		return &DirHandle{f: f}, nil
 	}
 
 	return os.Create(localPath)
@@ -111,7 +127,6 @@ func (b *LocalBackend) Rename(oldPath, newPath string) error {
 }
 
 func (b *LocalBackend) Chmod(path string, mode uint32) error {
-	// Convert 9P mode to os.FileMode (lower 9 bits)
 	return os.Chmod(b.toLocal(path), os.FileMode(mode&0777))
 }
 
@@ -145,4 +160,49 @@ func fileInfoToDir(fi os.FileInfo) p9.Dir {
 		Gid:    "group",
 		Muid:   "user",
 	}
+}
+
+// DirHandle wraps a directory file to provide 9P read semantics
+// DirHandle wraps a directory file to provide 9P read semantics
+type DirHandle struct {
+	f      *os.File
+	offset int64
+	data   []byte
+	loaded bool
+}
+
+func (d *DirHandle) Read(p []byte) (n int, err error) {
+	if !d.loaded {
+		log.Printf("DirHandle: Reading directory %s", d.f.Name())
+		dirs, err := d.f.Readdir(-1)
+		if err != nil && err != io.EOF {
+			log.Printf("DirHandle: Readdir failed: %v", err)
+			return 0, err
+		}
+
+		log.Printf("DirHandle: Found %d entries", len(dirs))
+		for _, fi := range dirs {
+			log.Printf("  - %s", fi.Name())
+			p9d := fileInfoToDir(fi)
+			d.data = append(d.data, p9d.Bytes()...)
+		}
+		d.loaded = true
+	}
+
+	if d.offset >= int64(len(d.data)) {
+		return 0, io.EOF
+	}
+
+	n = copy(p, d.data[d.offset:])
+	d.offset += int64(n)
+	log.Printf("DirHandle: Read returning %d bytes (offset %d/%d)", n, d.offset, len(d.data))
+	return n, nil
+}
+
+func (d *DirHandle) Write(p []byte) (n int, err error) {
+	return 0, io.ErrUnexpectedEOF // Directories are read-only for data
+}
+
+func (d *DirHandle) Close() error {
+	return d.f.Close()
 }

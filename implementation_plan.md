@@ -1,58 +1,37 @@
-# System Scaffolding Implementation Plan
+# VFS Implementation Gap Analysis
 
-## Goal
-Scaffold the directory structure and initial documentation for the child modules of the `ten` framework. This prepares the codebase for the "Implement Up" phase.
+## 1. Persistence & Storage (Status: **CRITICAL FIX NEEDED**)
+The infrastructure successfully mounts SeaweedFS at `/data` via FUSE. However, the VFS application is currently misconfigured.
 
-## Proposed Changes
+*   **Current Behavior**: `vfs` defaults to serving `/tmp/ten-data` (volatile container storage).
+*   **Required Behavior**: `vfs` must serve `/data` (the persistent FUSE mount).
+*   **Fix**: Update `docker-compose.yml` to set `DATA_ROOT=/data` for the `vfs` service.
 
-### Root Structure
-We will create the following directory structure:
-```text
-/
-├── cmd/
-│   └── kernel/
-├── pkg/
-│   ├── 9p/           (Protocol Library)
-│   ├── fs/           (SeaweedFS Driver)
-│   ├── auth/         (Factotum)
-│   └── ssr/          (Renderer)
-├── kernel/           (The Core Node)
-│   └── INTENT.md
-├── worm/             (NATS/Seaweed Config)
-│   └── INTENT.md
-├── vfs/              (SeaweedFS Filer)
-│   └── INTENT.md
-├── ssr/              (Renderer)
-│   └── INTENT.md
-└── factotum/         (Auth)
-    └── INTENT.md
-```
+## 2. Code Organization (Refactor)
+The codebase has legacy naming from the previous S3 attempt.
 
-*(Note: Adjusting structure to match Go standards `pkg/` vs Node Logic folders. We stick to the Node-based folder structure defined in `AI_DEVELOPMENT.md` for the logical nodes, maybe mapping them to `pkg` internally).*
-**Correction**: The `AI_DEVELOPMENT.md` says "Node is a workspace". So we should give them top-level directories:
+*   `vfs/seaweed.go`: Currently contains the `LocalBackend` implementation and `Backend` interface. This is confusing.
+*   **Action**:
+    *   Rename `vfs/seaweed.go` -> `vfs/backend_local.go` (Implementation).
+    *   Extract `Backend` interface to `vfs/backend.go`.
 
-*   `/kernel`
-*   `/vfs` (Seaweed Configs)
-*   `/ssr`
-*   `/factotum`
+## 3. Real-Time Updates (Missing)
+The system requires real-time updates via NATS.
 
-### 1. [NEW] Kernel Scaffolding
-*   Start `kernel/INTENT.md`.
-*   Description: The logic-blind 9P switchboard.
+*   **Gap**: `vfs/watch.go` is a stub.
+*   **Requirement**:
+    *   VFS must subscribe to SeaweedFS events via NATS (JetStream).
+    *   When an external event occurs (e.g., file change), VFS must update its internal state or notify connected 9P clients.
+    *   *Note*: Since we are using FUSE, the local kernel might see changes, but 9P doesn't have a "push" notification mechanism other than blocking reads on directories or specific event files.
+    *   **Spec Check**: Does the Spec require blocking reads? Yes.
 
-### 2. [NEW] VFS Scaffolding
-*   Start `vfs/INTENT.md`.
-*   Description: The SeaweedFS Filer configuration and mounting instructions.
+## 4. WORM / History (Deferred)
+We rely on SeaweedFS for versioning.
+*   **Gap**: VFS has no logic to *expose* these versions.
+*   **Plan**: For V1, we accept that VFS shows the *HEAD* (latest) version via the mount. Accessing history will be a future feature (potentially via a `.hist` virtual directory).
 
-### 3. [NEW] SSR Scaffolding
-*   Start `ssr/INTENT.md`.
-*   Description: The rendering service intent.
+# Execution Plan
 
-### 4. [NEW] Factotum Scaffolding
-*   Start `factotum/INTENT.md`.
-*   Description: Authentication service intent.
-
-## Verification Plan
-### Manual Verification
-1.  Run `ls -R` to verify the directory structure is created.
-2.  Review `INTENT.md` content for each module.
+1.  **Config**: Fix `DATA_ROOT` in `docker-compose.yml`.
+2.  **Refactor**: Clean up `vfs` file structure.
+3.  **Verify**: Restart `vfs` and verify persistence (write file, restart container, read file).

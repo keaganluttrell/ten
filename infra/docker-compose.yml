@@ -1,0 +1,130 @@
+services:
+  # --- Infrastructure ---
+
+  # The Source of Truth (Storage + History)
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.59
+    ports:
+      - "9333:9333" # Master
+      - "8888:8888" # Filer
+    command: "server -filer -master.volumeSizeLimitMB=1024 -volume.max=0 -volume.port=8085 -filer.port=8888 -volume.minFreeSpacePercent=0"
+    volumes:
+      - ../.data:/data
+      - ./seaweed/filer.toml:/etc/seaweedfs/filer.toml
+    working_dir: /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9333/cluster/status"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+
+  # The Nervous System (Events)
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: "-js -c /etc/nats/nats.conf"
+    volumes:
+      - ./nats:/etc/nats
+      - nats_data:/data/jetstream
+
+  # --- Plan 9 Grid (Go Services) ---
+
+  # The Gateway (Logic Blind)
+  kernel:
+    image: ten-kernel:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: kernel
+    ports:
+      - "9000:9000"
+      - "9009:9009"
+    environment:
+      # Addresses are in Plan 9 Dial Format: network!address!port
+      ADDR: :9000
+      WS_ADDR: :9009
+      VFS_ADDR: tcp!vfs!9001
+      FACTOTUM_ADDR: tcp!factotum!9002
+      SSR_ADDR: tcp!ssr!8080
+      SIGNING_KEY_BASE64: V7qZEbmD1saFOKpG0UX5FP21kw6kh76neBxrcJWS54E=
+      HOST_KEY_BASE64: UmtcdoTKAm20D1kRA9jSGB51kb9UcOo7Jqxrvkg0n+qoVEBj26Ovn/v/lpwh0MYRbgCtmsAaf573SXx0ND3OwQ==
+      ENV: dev
+    depends_on:
+      - vfs
+      - factotum
+      - ssr
+
+  # The File Server (Seaweed Gateway)
+  vfs:
+    image: ten-vfs:latest
+    build:
+      context: ..
+      dockerfile: vfs/Dockerfile
+    ports:
+      - "9001:9001"
+    environment:
+      SERVICE: vfs
+      ADDR: :9001
+      DATA_ROOT: /data/ten/vfs
+      SEAWEED_ENDPOINT: seaweedfs:8888 # Filer GRPC/HTTP
+      NATS_ADDR: nats:4222
+      TRUSTED_KEY: qFRAY9ujr5/7/5acIdDGEW4ArZrAGn+e90l8dDQ9zsE=
+    volumes:
+      - ../fs:/import:ro
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    depends_on:
+      seaweedfs:
+        condition: service_started
+      nats:
+        condition: service_started
+
+  # The Key Server
+  factotum:
+    image: ten-factotum:latest
+    build:
+      context: ../
+      dockerfile: Dockerfile
+      args:
+        SERVICE: factotum
+    ports:
+      - "9002:9002"
+    environment:
+      ADDR: :9002
+      LISTEN_ADDR: :9002
+      VFS_ADDR: tcp!vfs!9001
+      DATA_ROOT: /priv/factotum
+    volumes:
+      - ../fs/priv/factotum:/priv/factotum:ro
+
+  # The View Server
+  ssr:
+    image: ten-ssr:latest
+    build:
+      context: ../
+      dockerfile: Dockerfile
+      args:
+        SERVICE: ssr
+    ports:
+      - "8080:8080"
+    environment:
+      ADDR: :8080
+      KERNEL_ADDR: kernel:9000
+      # SSR might need to dial Kernel or VFS to get data?
+      # Spec says: Client -> Kernel -> SSR. SSR reads /data via Kernel? 
+      # Actually SPEC says: SSR reads /data/post via 9P from VFS.
+      VFS_ADDR: tcp!vfs!9001 
+    volumes:
+      - ../client:/client:ro
+
+volumes:
+  seaweed_data:
+  nats_data:

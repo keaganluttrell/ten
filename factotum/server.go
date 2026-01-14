@@ -50,11 +50,25 @@ func NewServer(cfg Config) (*Server, error) {
 
 	sessions := NewSessions()
 
+	// Initialize credential store
+	credStore := NewCredentialStore(cfg.VFSAddr)
+
+	// Initialize WebAuthn handler
+	webAuthnCfg := WebAuthnConfig{
+		RPDisplayName: "Ten Operating System",
+		RPID:          "localhost",
+		RPOrigin:      "http://localhost:8080",
+	}
+	webAuthnHandler, err := NewWebAuthnHandler(webAuthnCfg, credStore)
+	if err != nil {
+		return nil, fmt.Errorf("webauthn init failed: %w", err)
+	}
+
 	return &Server{
 		listenAddr: cfg.ListenAddr,
 		keyring:    keyring,
 		sessions:   sessions,
-		rpc:        NewRPC(sessions, keyring, cfg.VFSAddr), // Pass VFSAddr
+		rpc:        NewRPC(sessions, keyring, cfg.VFSAddr, webAuthnHandler),
 		ctl:        NewCtl(keyring),
 	}, nil
 }

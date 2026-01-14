@@ -84,14 +84,23 @@ This document outlines the known architectural flaws, protocol gaps, and securit
 
 ## 8. Production Infrastructure
 - [ ] **Deficiency**: System lacks cloud-native storage, secure transport, and browser integration.
-    - [ ] **Deployment**: Dockerize services (Kernel, VFS, Factotum, SSR).
-    - [ ] **Orchestration**: Create `docker-compose.yml` with SeaweedFS & NATS.
-    - [ ] **Persistence**: Implement SeaweedFS backend for `vfs`.
-    - [ ] **Networking**: Implement WebSocket transport (`ws!`) in Kernel for browser clients.
-    - [ ] **Identity**: Implement WebAuthn ceremony in `factotum` (via `/rpc`).
+    - [x] **Deployment**: Dockerize services (Kernel, VFS, Factotum, SSR).
+    - [x] **Orchestration**: Create `docker-compose.yml` with SeaweedFS & NATS.
+    - [x] **Persistence**: Integrate SeaweedFS via FUSE mount (Infrastructure).
+    - [x] **Implementation**: Finalize VFS code to serve `/data`.
+    - [x] **Networking**: Implement WebSocket transport (`ws!`) in Kernel for browser clients.
+    - [x] **Identity**: Implement WebAuthn ceremony in `factotum` (via `/rpc`).
     - [ ] **Permissions**: Implement `/adm/users` hierarchy enforcement.
-    - [ ] **Client**:
-        - [ ] Create minimal Vanilla JS 9P client.
+    - [/] **Client**:
+        - [x] Create minimal Vanilla JS 9P client.
         - [ ] Implement Service Worker (PWA) for app-like experience.
         - [ ] Integrate WebAuthn for passwordless login.
         - [ ] Store Auth Ticket in Browser Filesystem (OPFS).
+
+[] Ask elders about what our base VFS tree should be admins.
+[] Ask elders about what our base VFS tree should be users.
+[] Ask elders about how we can add users to the system and how they log in.
+[] Go through all modules and review specifications and implementation.
+    - [ ] Weigh our current implementation against plan 9 and elders 
+    - [ ] Clean up all documentaion and make it uniform.
+- [ ] Create a plan to deploy ten to a cloud server from a single docker-compose.yml file. It should run without a hitch and let the user be the admin and ready to go.

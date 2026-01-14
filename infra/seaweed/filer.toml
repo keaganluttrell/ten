@@ -1,0 +1,8 @@
+[notification.nats]
+enabled = true
+server = "nats:4222"
+subject = "filer_events"
+
+[leveldb2]
+enabled = true
+dir = "./filerldb2"
