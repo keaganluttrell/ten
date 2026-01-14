@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Keyring manages public keys and the signing key.
@@ -94,6 +95,30 @@ func (kr *Keyring) loadOrGenerateSigningKey() error {
 	if err := os.MkdirAll(kr.basePath, 0700); err != nil {
 		return err
 	}
+	encoded := base64.StdEncoding.EncodeToString(priv)
+	return os.WriteFile(keyPath, []byte(encoded), 0600)
+}
+
+// RotateSigningKey generates a new signing key and saves it.
+// The old key is archived with a timestamp suffix.
+func (kr *Keyring) RotateSigningKey() error {
+	keyPath := filepath.Join(kr.basePath, "signing.key")
+
+	// Archive old key
+	if data, err := os.ReadFile(keyPath); err == nil {
+		archivePath := keyPath + "." + fmt.Sprintf("%d", time.Now().Unix())
+		os.WriteFile(archivePath, data, 0600)
+	}
+
+	// Generate new key
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return err
+	}
+	kr.signingKey = priv
+	kr.publicKey = pub
+
+	// Save new key
 	encoded := base64.StdEncoding.EncodeToString(priv)
 	return os.WriteFile(keyPath, []byte(encoded), 0600)
 }

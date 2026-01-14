@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	p9 "github.com/keaganluttrell/ten/pkg/9p"
 )
@@ -14,11 +15,20 @@ type fidRef struct {
 	client    *Client
 	remoteFid uint32
 	path      string // Track absolute path
+	isOpen    bool
+	openMode  uint8
+}
+
+// MessageTransport abstracts the connection (WebSocket or other).
+type MessageTransport interface {
+	ReadMsg(ctx context.Context) (*p9.Fcall, error)
+	WriteMsg(ctx context.Context, f *p9.Fcall) error
+	Close() error
 }
 
 // Session represents a single WebSocket connection.
 type Session struct {
-	socket  *Socket
+	socket  MessageTransport
 	ns      *Namespace
 	user    string
 	vfsAddr string
@@ -29,7 +39,51 @@ type Session struct {
 	fids map[uint32]fidRef
 }
 
-func NewSession(sock *Socket, vfsAddr string, pubKey ed25519.PublicKey, host *HostIdentity, d Dialer) *Session {
+// SessionRegistry tracks all active sessions.
+type SessionRegistry struct {
+	mu       sync.RWMutex
+	sessions map[uint32]*Session
+	nextID   uint32
+}
+
+var Registry = &SessionRegistry{
+	sessions: make(map[uint32]*Session),
+	nextID:   1,
+}
+
+func (r *SessionRegistry) Register(s *Session) uint32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id := r.nextID
+	r.nextID++
+	r.sessions[id] = s
+	return id
+}
+
+func (r *SessionRegistry) Unregister(id uint32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.sessions, id)
+}
+
+func (r *SessionRegistry) List() []uint32 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]uint32, 0, len(r.sessions))
+	for id := range r.sessions {
+		ids = append(ids, id)
+	}
+	// Sort?
+	return ids
+}
+
+func (r *SessionRegistry) Get(id uint32) *Session {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sessions[id]
+}
+
+func NewSession(sock MessageTransport, vfsAddr string, pubKey ed25519.PublicKey, host *HostIdentity, d Dialer) *Session {
 	return &Session{
 		socket:  sock,
 		vfsAddr: vfsAddr,
@@ -37,12 +91,18 @@ func NewSession(sock *Socket, vfsAddr string, pubKey ed25519.PublicKey, host *Ho
 		host:    host,
 		dialer:  d,
 		fids:    make(map[uint32]fidRef),
+		ns:      NewNamespace(),
 	}
 }
 
 // Serve handles the 9P message loop.
 func (s *Session) Serve() {
 	defer s.socket.Close()
+
+	// Register Session
+	id := Registry.Register(s)
+	defer Registry.Unregister(id)
+
 	ctx := context.Background()
 
 	for {
@@ -96,23 +156,12 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 		} else {
 			// VFS Alive - Normal Boot
 			if isBootstrap {
-				// Bootstrap Mode: Only mount Factotum (or VFS if Factotum not found?)
-				// Spec says Factotum. But if we have manifest, we should follow it.
-				factotumAddr := findMountAddr(manifest, "/dev/factotum")
-				if factotumAddr != "" {
-					c, err := s.dialer.Dial(factotumAddr)
-					if err == nil {
-						s.ns.Mount("/", c) // Client sees Factotum at Root
-						s.user = "none"
-					} else {
-						// Factotum Dial Failed? Rescue?
-						log.Printf("Boot Warning: Factotum unavailable (%v).", err)
-						s.mountRescueFS()
-					}
-				} else {
-					log.Printf("Boot Warning: Factotum not in manifest.")
+				// Bootstrap Mode: Build Full Namespace from Manifest
+				if err := s.ns.Build(manifest, s.dialer); err != nil {
+					log.Printf("Boot Warning: Namespace Build Failed (%v)", err)
 					s.mountRescueFS()
 				}
+				s.user = "none"
 			} else {
 				// Ticket Mode
 				ticket, err := ValidateTicket(req.Aname, s.vfsAddr, s.pubKey, s.host, s.dialer)
@@ -130,29 +179,32 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 
 		// Mount /dev/sys (Always)
 		sysClient := NewSysClient(s.ns, s.dialer)
-		s.ns.Mount("/dev/sys", sysClient)
+		s.ns.Mount("/dev/sys", sysClient, MREPL)
 
 		// Attach to Root
-		rootClient, relPath := s.ns.Route("/")
-		if rootClient == nil {
+		rootStack := s.ns.Route("/")
+		if len(rootStack) == 0 {
 			return rError(req, "root_mount_missing")
 		}
+		// Default to first match for root attach?
+		// In Plan 9, attaching to / usually lands you on the head of the union.
+		rootRoute := rootStack[0]
 
 		fReq := &p9.Fcall{
 			Type:  p9.Tattach,
 			Fid:   req.Fid,
 			Afid:  p9.NOFID,
 			Uname: s.user,
-			Aname: relPath,
+			Aname: rootRoute.RelPath,
 		}
 
-		fResp, err := rootClient.RPC(fReq)
+		fResp, err := rootRoute.Client.RPC(fReq)
 		if err != nil {
 			return rError(req, "attach_failed: "+err.Error())
 		}
 
 		resp.Qid = fResp.Qid
-		s.putFid(req.Fid, rootClient, req.Fid, "/") // Store "/"
+		s.putFid(req.Fid, rootRoute.Client, req.Fid, "/") // Store "/"
 
 	case p9.Tflush:
 		resp.Type = p9.Rflush
@@ -168,6 +220,8 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 		currClient := ref.client
 		currFid := ref.remoteFid
 		currPath := ref.path
+
+		log.Printf("DEBUG: Twalk Start. Fid=%d NewFid=%d Wname=%v", req.Fid, req.Newfid, req.Wname)
 
 		// If we are cloning (len(wname) == 0)
 		if len(req.Wname) == 0 {
@@ -193,55 +247,133 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 		}
 
 		success := true
+
+		// Helper to find current mount point
+		getMountPoint := func(path string, client *Client) string {
+			stack := s.ns.Route(path)
+			for _, r := range stack {
+				if r.Client == client {
+					return r.MountPoint
+				}
+			}
+			return "/"
+		}
+		currMountPoint := getMountPoint(currPath, currClient)
+
 		for _, name := range req.Wname {
+			log.Printf("DEBUG: Twalk Loop Name=%s CurrPath=%s", name, currPath)
 			// Calculate next path
 			nextPath := resolvePath(currPath, name)
 
-			// Check Route
-			nextClient, _ := s.ns.Route(nextPath)
-
-			if nextClient != currClient {
-				// MOUNT CROSSING
-				currClient.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: walkFid})
-
-				currClient = nextClient
-
-				// Attach to new root
-				fReq := &p9.Fcall{
-					Type:  p9.Tattach,
-					Fid:   walkFid,
-					Afid:  p9.NOFID,
-					Uname: s.user,
-					Aname: "/", // Assume mount point maps to root of service
-				}
-				fResp, err := currClient.RPC(fReq)
-				if err != nil {
-					success = false
-					break // Fail walk
-				}
-				wqids = append(wqids, fResp.Qid)
-
-			} else {
-				// SAME CLIENT
-				// Walk one step
-				fReq := &p9.Fcall{
-					Type:   p9.Twalk,
-					Fid:    walkFid,
-					Newfid: walkFid, // Walk in place
-					Wname:  []string{name},
-				}
-				fResp, err := currClient.RPC(fReq)
-				if err != nil {
-					success = false
-					break
-				}
-				if len(fResp.Wqid) == 0 {
-					success = false
-					break
-				}
-				wqids = append(wqids, fResp.Wqid...)
+			// Get the Stack for the *next* path
+			nextStack := s.ns.Route(nextPath)
+			if len(nextStack) == 0 {
+				log.Printf("DEBUG: Route failed for path %s (curr=%s, name=%s)", nextPath, currPath, name)
+				success = false
+				break
 			}
-			currPath = nextPath
+
+			// Union Walk Strategy
+			log.Printf("DEBUG: Twalk Stack Len=%d", len(nextStack))
+
+			var foundClient *Client
+			var foundQid p9.Qid
+			var foundMountPoint string
+			found := false
+
+			var candidateErrors []string
+
+			for _, candidate := range nextStack {
+				// Check if we are staying within the same mount point
+				isSameMount := (candidate.Client == currClient && candidate.MountPoint == currMountPoint)
+				log.Printf("DEBUG: Candidate %v same=%v", candidate.MountPoint, isSameMount)
+
+				if isSameMount {
+					// Optimized Walk on existing client
+					fReq := &p9.Fcall{
+						Type:   p9.Twalk,
+						Fid:    walkFid,
+						Newfid: walkFid,
+						Wname:  []string{name},
+					}
+					fResp, err := currClient.RPC(fReq)
+					if err == nil && len(fResp.Wqid) > 0 {
+						found = true
+						foundClient = currClient
+						foundQid = fResp.Wqid[0]
+						foundMountPoint = candidate.MountPoint
+						break // Found valid implementation for this component
+					}
+					msg := "nil"
+					if err != nil {
+						msg = err.Error()
+					}
+					candidateErrors = append(candidateErrors, fmt.Sprintf("SameMount(%v): %s (len=%d)", currClient, msg, len(fResp.Wqid)))
+					continue // Try next candidate in the union stack
+				}
+
+				// Cross Mount Boundary (Jump)
+				probFid := s.nextInternalFid()
+
+				// Attach to Root of candidate client
+				aResp, err := candidate.Client.RPC(&p9.Fcall{Type: p9.Tattach, Fid: probFid, Afid: p9.NOFID, Uname: s.user, Aname: "/"})
+				if err == nil {
+					// Walk to the target RelPath
+					pathParts := strings.Split(strings.Trim(candidate.RelPath, "/"), "/")
+					if candidate.RelPath == "" || candidate.RelPath == "/" {
+						pathParts = []string{}
+					}
+
+					fResp, err := candidate.Client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: probFid, Newfid: probFid, Wname: pathParts})
+
+					if err == nil {
+						// Success! We found the file on this client.
+						if len(fResp.Wqid) != len(pathParts) {
+							// Partial walk on cross-mount? Treat as failure for now or handle gracefully.
+							// For cross-mount jump, we expect full resolution of the relative path.
+							candidateErrors = append(candidateErrors, fmt.Sprintf("CrossMountWalk(%v): partial walk %d/%d", candidate.Client, len(fResp.Wqid), len(pathParts)))
+							candidate.Client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: probFid})
+							continue
+						}
+
+						// Cleanup old walkFid (it was on the old client/path)
+						currClient.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: walkFid})
+
+						// Adopt the new fid
+						walkFid = probFid
+
+						found = true
+						foundClient = candidate.Client
+						foundMountPoint = candidate.MountPoint
+
+						// Determine Qid
+						if len(pathParts) > 0 {
+							foundQid = fResp.Wqid[len(fResp.Wqid)-1]
+						} else {
+							// We are at root of mount. Use Attach QID.
+							foundQid = aResp.Qid
+						}
+						break
+					} else {
+						candidateErrors = append(candidateErrors, fmt.Sprintf("CrossMountWalk(%v): %v", candidate.Client, err))
+						// Failed to walk to target on this client
+						candidate.Client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: probFid})
+					}
+				} else {
+					candidateErrors = append(candidateErrors, fmt.Sprintf("CrossMountAttach(%v): %v", candidate.Client, err))
+				}
+			}
+
+			if found {
+				currClient = foundClient
+				currMountPoint = foundMountPoint
+				wqids = append(wqids, foundQid)
+				currPath = nextPath
+			} else {
+				log.Printf("DEBUG: Not Found %s", name)
+				success = false
+				return rError(req, fmt.Sprintf("not_found: %s | tried: %v", name, candidateErrors))
+			}
 		}
 
 		if !success {
@@ -257,7 +389,7 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 		}
 
 		resp.Wqid = wqids
-
+		log.Printf("DEBUG: Twalk Return. Wqids=%d", len(wqids))
 	case p9.Tclunk:
 		ref, ok := s.getFid(req.Fid)
 		if ok {
@@ -278,6 +410,12 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 		if err != nil {
 			return rError(req, "open_error: "+err.Error())
 		}
+
+		// Update ref state
+		ref.isOpen = true
+		ref.openMode = req.Mode
+		s.fids[req.Fid] = ref
+
 		resp.Qid = fResp.Qid
 		resp.Iounit = fResp.Iounit
 
@@ -292,6 +430,14 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 		if err != nil {
 			return rError(req, "create_error: "+err.Error())
 		}
+
+		// Update ref state - Tcreate opens the file
+		ref.isOpen = true
+		ref.openMode = req.Mode
+		// Note: Tcreate modifies the path of the fid to the new file
+		ref.path = resolveJoin(ref.path, req.Name)
+		s.fids[req.Fid] = ref
+
 		resp.Qid = fResp.Qid
 		resp.Iounit = fResp.Iounit
 
@@ -303,8 +449,34 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 		fReq := *req
 		fReq.Fid = ref.remoteFid
 		fResp, err := ref.client.RPC(&fReq)
+
+		// Recovery Logic
+		if err != nil || fResp.Type == p9.Rerror {
+			// Check if we should recover
+			shouldRecover := err != nil
+			if fResp != nil && fResp.Type == p9.Rerror && (strings.Contains(fResp.Ename, "fid not found") || strings.Contains(fResp.Ename, "file not open")) {
+				shouldRecover = true
+			}
+
+			if shouldRecover {
+				log.Printf("Session: Recovering stale handle for %s", ref.path)
+				client, newFid, rErr := s.recoverFid(ref)
+				if rErr == nil {
+					// Update ref
+					s.putFid(req.Fid, client, newFid, ref.path)
+					// Retry RPC
+					fReq.Fid = newFid
+					retryReq := fReq // Copy request to avoid tag issues
+					fResp, err = client.RPC(&retryReq)
+				}
+			}
+		}
+
 		if err != nil {
 			return rError(req, "read_error: "+err.Error())
+		}
+		if fResp.Type == p9.Rerror {
+			return fResp // Pass through Rerror
 		}
 		resp.Data = fResp.Data
 
@@ -362,6 +534,13 @@ func (s *Session) delFid(fid uint32) {
 	delete(s.fids, fid)
 }
 
+func resolveJoin(base, name string) string {
+	if base == "/" {
+		return "/" + name
+	}
+	return base + "/" + name
+}
+
 func resolvePath(base, name string) string {
 	if name == ".." {
 		parts := strings.Split(base, "/")
@@ -374,6 +553,86 @@ func resolvePath(base, name string) string {
 		return "/" + name
 	}
 	return base + "/" + name
+}
+
+// 3. Attach (as kernel)
+// recoverFid attempts to re-establish a FID for a given path using the namespace.
+func (s *Session) recoverFid(ref fidRef) (*Client, uint32, error) {
+	routeStack := s.ns.Route(ref.path)
+	if len(routeStack) == 0 {
+		return nil, 0, fmt.Errorf("route not found for %s", ref.path)
+	}
+
+	// Try all backends in the union stack?
+	// For recovery, we probably want the *primary* one or try them all until one works.
+	// Since we don't know which one the original FID belonged to without tracking it...
+	// Wait, fidRef stores 'client'. We can match it!
+
+	var targetRoute *ResolvedPath
+	for _, r := range routeStack {
+		if r.Client == ref.client {
+			targetRoute = r
+			break
+		}
+	}
+
+	if targetRoute == nil {
+		// Client is no longer in the route for this path?
+		// Fallback to head of stack? Or fail?
+		// If the namespace changed, the fid is invalid.
+		// But let's try head of stack as best effort.
+		targetRoute = routeStack[0]
+	}
+
+	client := targetRoute.Client
+	newFid := s.nextInternalFid()
+
+	// Walk from root to path
+	parts := strings.Split(strings.Trim(targetRoute.RelPath, "/"), "/")
+	if targetRoute.RelPath == "" || targetRoute.RelPath == "/" {
+		parts = []string{}
+	}
+
+	rootFid := s.nextInternalFid()
+	// Tattach (assumes no auth needed for recovery in this iteration)
+	_, err := client.RPC(&p9.Fcall{Type: p9.Tattach, Fid: rootFid, Afid: p9.NOFID, Uname: "kernel", Aname: "/"})
+	if err != nil {
+		return nil, 0, fmt.Errorf("recover_attach_failed: %w", err)
+	}
+
+	// Walk
+	if len(parts) > 0 {
+		_, err = client.RPC(&p9.Fcall{Type: p9.Twalk, Fid: rootFid, Newfid: newFid, Wname: parts})
+		client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: rootFid}) // Cleanup root
+		if err != nil {
+			return nil, 0, fmt.Errorf("recover_walk_failed: %w", err)
+		}
+	} else {
+		newFid = rootFid // Root is the target
+	}
+
+	// Restore Open State
+	if ref.isOpen {
+		_, err := client.RPC(&p9.Fcall{Type: p9.Topen, Fid: newFid, Mode: ref.openMode})
+		if err != nil {
+			// Failed to open, close fid and abort
+			client.RPC(&p9.Fcall{Type: p9.Tclunk, Fid: newFid})
+			return nil, 0, fmt.Errorf("recover_open_failed: %w", err)
+		}
+	}
+
+	return client, newFid, nil
+}
+
+func (s *Session) nextInternalFid() uint32 {
+	// Start from high numbers to avoid collision with user FIDs (usually low numbers)
+	// Simple collision check against s.fids
+	for i := uint32(0xFFFFFFFE); i > 0; i-- {
+		if _, ok := s.fids[i]; !ok {
+			return i
+		}
+	}
+	return 0 // Full?
 }
 
 func rError(req *p9.Fcall, ename string) *p9.Fcall {
@@ -391,7 +650,7 @@ func rError(req *p9.Fcall, ename string) *p9.Fcall {
 
 func (s *Session) mountRescueFS() {
 	client := NewBootFSClient()
-	s.ns.Mount("/", client)
+	s.ns.Mount("/", client, MREPL)
 }
 
 func fetchNamespaceManifest(vfsAddr string, d Dialer, host *HostIdentity) (string, error) {
@@ -414,31 +673,20 @@ func fetchNamespaceManifest(vfsAddr string, d Dialer, host *HostIdentity) (strin
 		return resp, nil
 	}
 
+	// 1b. Negotiate Version
+	if _, err := rpcCheck(&p9.Fcall{Type: p9.Tversion, Msize: 8192, Version: "9P2000"}); err != nil {
+		return "", fmt.Errorf("version_failed: %w", err)
+	}
+
 	// 2. Auth (If HostIdentity present)
 	var afid uint32 = p9.NOFID
 	if host != nil {
-		afid = 100 // Arbitrary
-		// Tauth
-		_, err := rpcCheck(&p9.Fcall{Type: p9.Tauth, Afid: afid, Uname: "kernel", Aname: "/"})
+		var err error
+		afid, err = client.Authenticate("kernel", host.PrivateKey)
 		if err != nil {
-			log.Printf("Boot Warning: Tauth failed: %v", err)
+			log.Printf("Boot Warning: Auth failed: %v", err)
 			afid = p9.NOFID
 		} else {
-			// Host Challenge Protocol
-			// 1. Read Nonce (32 bytes)
-			rResp, err := rpcCheck(&p9.Fcall{Type: p9.Tread, Fid: afid, Offset: 0, Count: 32})
-			if err != nil {
-				return "", fmt.Errorf("auth_read_nonce_failed: %w", err)
-			}
-			nonce := rResp.Data
-
-			// 2. Sign Nonce
-			sig := host.Sign(nonce)
-
-			// 3. Write Signature
-			if _, err := rpcCheck(&p9.Fcall{Type: p9.Twrite, Fid: afid, Data: sig, Count: uint32(len(sig))}); err != nil {
-				return "", fmt.Errorf("auth_write_sig_failed: %w", err)
-			}
 			log.Printf("Boot: Host Auth Successful")
 		}
 	}

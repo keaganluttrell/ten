@@ -37,6 +37,8 @@ func (c *Ctl) Write(data []byte) (string, error) {
 		return c.handleKey(parts[1:])
 	case "delkey":
 		return c.handleDelKey(parts[1:])
+	case "rotate":
+		return c.handleRotate(parts[1:])
 	default:
 		return "", errors.New("unknown command: " + parts[0])
 	}
@@ -109,6 +111,23 @@ func (c *Ctl) handleDelKey(parts []string) (string, error) {
 	}
 
 	return "ok", nil
+}
+
+// handleRotate processes the "rotate" command.
+func (c *Ctl) handleRotate(parts []string) (string, error) {
+	if len(parts) == 0 {
+		return "", errors.New("subcommand required (e.g., 'rotate signing')")
+	}
+
+	switch parts[0] {
+	case "signing":
+		if err := c.keyring.RotateSigningKey(); err != nil {
+			return "", err
+		}
+		return "ok", nil
+	default:
+		return "", errors.New("unknown rotate target: " + parts[0])
+	}
 }
 
 // parseCtlParams converts ["key=value", ...] to map[string]string.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
 
@@ -8,18 +9,33 @@ import (
 )
 
 func main() {
-	addr := getEnv("LISTEN_ADDR", ":9003")
-	dataPath := getEnv("DATA_ROOT", "/priv/factotum")
-	vfsAddr := getEnv("VFS_ADDR", "vfs:9002")
+	addr := flag.String("addr", ":9003", "Address to listen on")
+	data := flag.String("data", "/priv/factotum", "Path to data directory")
+	vfsAddr := flag.String("vfs", "vfs:9002", "Address of VFS service")
+	flag.Parse()
 
-	if err := factotum.StartServer(addr, dataPath, vfsAddr); err != nil {
+	// Env fallback
+	if v := os.Getenv("LISTEN_ADDR"); v != "" && !isFlagPassed("addr") {
+		*addr = v
+	}
+	if v := os.Getenv("DATA_ROOT"); v != "" && !isFlagPassed("data") {
+		*data = v
+	}
+	if v := os.Getenv("VFS_ADDR"); v != "" && !isFlagPassed("vfs") {
+		*vfsAddr = v
+	}
+
+	if err := factotum.StartServer(*addr, *data, *vfsAddr); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
 
-func getEnv(key, defaultVal string) string {
-	if val := os.Getenv(key); val != "" {
-		return val
-	}
-	return defaultVal
+func isFlagPassed(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }

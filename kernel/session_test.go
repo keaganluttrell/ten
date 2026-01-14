@@ -40,8 +40,9 @@ func TestSession_Bootstrap(t *testing.T) {
 	assert.NotNil(t, sess.ns)
 
 	// Verify namespace has /dev/factotum
-	c, _ := sess.ns.Route("/dev/factotum")
-	assert.NotNil(t, c)
+	result := sess.ns.Route("/dev/factotum")
+	assert.NotEmpty(t, result)
+	assert.NotNil(t, result[0].Client)
 }
 
 func TestSession_TicketAuth(t *testing.T) {

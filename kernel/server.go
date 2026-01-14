@@ -1,14 +1,17 @@
 package kernel
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"log"
-	"net/http"
+	"net"
 	"os"
+
+	p9 "github.com/keaganluttrell/ten/pkg/9p"
 )
 
-// StartServer starts the Kernel WebSocket server.
+// StartServer starts the Kernel TCP server.
 func StartServer(listenAddr, vfsAddr, keyPath string) error {
 	pubKey := loadPublicKey(keyPath)
 	host, err := LoadHostIdentity()
@@ -16,22 +19,55 @@ func StartServer(listenAddr, vfsAddr, keyPath string) error {
 		log.Printf("Warning: Failed to load Host Identity: %v. Bootstrapping will invoke Tauth failure handling.", err)
 	}
 
-	log.Printf("Kernel listening on %s", listenAddr)
-	log.Printf("Bootstrap VFS at %s", vfsAddr)
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return err
+	}
+	log.Printf("Kernel listening on %s (TCP)", listenAddr)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/9p", func(w http.ResponseWriter, r *http.Request) {
-		sock, err := Upgrade(w, r)
+	// Start embedded ProcFS
+	go func() {
+		if err := StartProcFS(":9004"); err != nil {
+			log.Printf("ProcFS failed: %v", err)
+		}
+	}()
+
+	dialer := NewNetworkDialer()
+
+	for {
+		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("Upgrade failed: %v", err)
-			return
+			log.Printf("Accept failed: %v", err)
+			continue
 		}
 
-		sess := NewSession(sock, vfsAddr, pubKey, host, NetworkDialer{})
-		go sess.Serve()
-	})
+		go func(c net.Conn) {
+			transport := &TCPTransport{conn: c}
+			sess := NewSession(transport, vfsAddr, pubKey, host, dialer)
+			sess.Serve()
+		}(conn)
+	}
+}
 
-	return http.ListenAndServe(listenAddr, mux)
+type TCPTransport struct {
+	conn net.Conn
+}
+
+func (t *TCPTransport) ReadMsg(ctx context.Context) (*p9.Fcall, error) {
+	return p9.ReadFcall(t.conn)
+}
+
+func (t *TCPTransport) WriteMsg(ctx context.Context, f *p9.Fcall) error {
+	b, err := f.Bytes()
+	if err != nil {
+		return err
+	}
+	_, err = t.conn.Write(b)
+	return err
+}
+
+func (t *TCPTransport) Close() error {
+	return t.conn.Close()
 }
 
 func loadPublicKey(path string) ed25519.PublicKey {

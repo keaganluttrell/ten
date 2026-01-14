@@ -125,7 +125,7 @@ func Unmarshal(buf []byte, size uint32) (*Fcall, error) {
 		f.Count, body = g32(body)
 	case Tclunk, Tremove, Tstat:
 		f.Fid, body = g32(body)
-	case Rclunk, Rremove:
+	case Rclunk, Rremove, Rwstat:
 	case Rstat:
 		var n uint16
 		n, body = g16(body)

@@ -145,3 +145,92 @@ func TestVFS_DirectoryListing(t *testing.T) {
 	// Decode Dir entries to verify
 	// We just check count for now
 }
+
+func TestVFS_Twstat_Rename(t *testing.T) {
+	tmpDir := t.TempDir()
+	backend, _ := NewLocalBackend(tmpDir)
+
+	// Create test file directly
+	os.WriteFile(tmpDir+"/original.txt", []byte("content"), 0644)
+
+	c1, c2 := net.Pipe()
+	session := NewSession(c1, backend, "")
+	go session.Serve()
+	defer c2.Close()
+
+	rpc := func(req *p9.Fcall) *p9.Fcall {
+		req.Tag = 1
+		b, _ := req.Bytes()
+		c2.Write(b)
+		resp, _ := p9.ReadFcall(c2)
+		return resp
+	}
+
+	rpc(&p9.Fcall{Type: p9.Tversion, Msize: 8192, Version: "9P2000"})
+	rpc(&p9.Fcall{Type: p9.Tattach, Fid: 0, Uname: "user", Aname: "/"})
+
+	// Walk to original.txt -> Fid 1
+	resp := rpc(&p9.Fcall{Type: p9.Twalk, Fid: 0, Newfid: 1, Wname: []string{"original.txt"}})
+	assert.Equal(t, uint8(p9.Rwalk), resp.Type)
+
+	// Build stat with new name
+	newDir := p9.Dir{
+		Name:   "renamed.txt",
+		Mode:   0xFFFFFFFF, // Don't change mode
+		Length: 0xFFFFFFFFFFFFFFFF,
+	}
+	statBytes := newDir.Bytes()
+
+	// Twstat to rename
+	resp = rpc(&p9.Fcall{Type: p9.Twstat, Fid: 1, Stat: statBytes})
+	assert.Equal(t, uint8(p9.Rwstat), resp.Type)
+
+	// Verify file was renamed
+	_, err := os.Stat(tmpDir + "/renamed.txt")
+	assert.NoError(t, err)
+	_, err = os.Stat(tmpDir + "/original.txt")
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestVFS_Twstat_Truncate(t *testing.T) {
+	tmpDir := t.TempDir()
+	backend, _ := NewLocalBackend(tmpDir)
+
+	// Create test file with content
+	os.WriteFile(tmpDir+"/bigfile.txt", []byte("hello world this is a long string"), 0644)
+
+	c1, c2 := net.Pipe()
+	session := NewSession(c1, backend, "")
+	go session.Serve()
+	defer c2.Close()
+
+	rpc := func(req *p9.Fcall) *p9.Fcall {
+		req.Tag = 1
+		b, _ := req.Bytes()
+		c2.Write(b)
+		resp, _ := p9.ReadFcall(c2)
+		return resp
+	}
+
+	rpc(&p9.Fcall{Type: p9.Tversion, Msize: 8192, Version: "9P2000"})
+	rpc(&p9.Fcall{Type: p9.Tattach, Fid: 0, Uname: "user", Aname: "/"})
+
+	// Walk to file
+	resp := rpc(&p9.Fcall{Type: p9.Twalk, Fid: 0, Newfid: 1, Wname: []string{"bigfile.txt"}})
+	assert.Equal(t, uint8(p9.Rwalk), resp.Type)
+
+	// Truncate to 5 bytes
+	newDir := p9.Dir{
+		Name:   "", // Don't rename
+		Mode:   0xFFFFFFFF,
+		Length: 5,
+	}
+	statBytes := newDir.Bytes()
+
+	resp = rpc(&p9.Fcall{Type: p9.Twstat, Fid: 1, Stat: statBytes})
+	assert.Equal(t, uint8(p9.Rwstat), resp.Type)
+
+	// Verify truncation
+	content, _ := os.ReadFile(tmpDir + "/bigfile.txt")
+	assert.Equal(t, "hello", string(content))
+}

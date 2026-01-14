@@ -201,13 +201,31 @@ func (r *RPC) Close(fid uint32) {
 func (r *RPC) handleStart(sess *Session, cmd string) error {
 	// Parse: start proto=webauthn role=<register|auth> user=<userid>
 	parts := strings.Fields(cmd)
-	if len(parts) < 4 || parts[0] != "start" {
+	if len(parts) < 3 || parts[0] != "start" {
 		return errors.New("invalid start command")
 	}
 
 	params := parseParams(parts[1:])
 
 	proto := params["proto"]
+	if proto == "service" {
+		// Service Authentication
+		// start proto=service service=<name> role=auth
+		service := params["service"]
+		if service == "" {
+			return errors.New("service required")
+		}
+		if params["role"] != "auth" {
+			return errors.New("role must be 'auth' for service")
+		}
+
+		sess.User = "service:" + service
+		sess.Role = "auth"
+		sess.State = "done" // Immediate success for trusted services
+		r.sessions.Set(sess.FID, sess)
+		return nil
+	}
+
 	if proto != "webauthn" {
 		return fmt.Errorf("unsupported protocol: %s", proto)
 	}

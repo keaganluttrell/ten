@@ -92,7 +92,7 @@ func (f *Fcall) marshalBody() ([]byte, error) {
 		b = p32(b, f.Count)
 	case Tclunk, Tremove, Tstat:
 		b = p32(b, f.Fid)
-	case Rclunk, Rremove:
+	case Rclunk, Rremove, Rwstat:
 		// empty body
 	case Rstat:
 		b = p16(b, uint16(len(f.Stat)))

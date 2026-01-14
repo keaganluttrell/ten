@@ -169,13 +169,14 @@ func (sys *SysDevice) execute(cmd string) error {
 
 	switch parts[0] {
 	case "mount":
-		// mount <addr> <path>
-		// e.g. mount tcp!localhost:9999 /ext
-		if len(parts) != 3 {
-			return fmt.Errorf("usage: mount <addr> <path>")
+		// mount <addr> <path> [flags]
+		// e.g. mount tcp!localhost:9999 /ext -c
+		if len(parts) < 3 {
+			return fmt.Errorf("usage: mount <addr> <path> [flags]")
 		}
 		addr := convertAddr(parts[1])
 		path := parts[2]
+		flags, _ := parseFlags(parts[3:])
 
 		client, err := sys.dialer.Dial(addr)
 		if err != nil {
@@ -206,13 +207,25 @@ func (sys *SysDevice) execute(cmd string) error {
 		// Namespace expects Client to be ready to accept Walks from Fid 0?
 		// Let's check kernel/session.go logic or Client.
 
-		sys.ns.Mount(path, client)
-		log.Printf("Sys: Mounted %s at %s", addr, path)
+		sys.ns.Mount(path, client, flags)
+		log.Printf("Sys: Mounted %s at %s (flags=%d)", addr, path, flags)
 		return nil
 
 	case "bind":
-		// bind <old> <new> (Not implemented in Namespace yet? Let's check.)
-		return fmt.Errorf("bind not implemented")
+		// bind <old> <new> [flags]
+		// e.g. bind /data /alias -b
+		if len(parts) < 3 {
+			return fmt.Errorf("usage: bind <old> <new> [flags]")
+		}
+		oldPath := parts[1]
+		newPath := parts[2]
+		flags, _ := parseFlags(parts[3:])
+
+		if err := sys.ns.Bind(oldPath, newPath, flags); err != nil {
+			return err
+		}
+		log.Printf("Sys: Bound %s to %s (flags=%d)", oldPath, newPath, flags)
+		return nil
 
 	default:
 		return fmt.Errorf("unknown command: %s", parts[0])

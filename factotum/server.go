@@ -1,6 +1,7 @@
 package factotum
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -121,18 +122,32 @@ func (s *Server) handleConn(conn net.Conn) {
 			currPath := fid.Path
 
 			for _, w := range req.Wname {
+				nextPath := currPath + "/" + w
 				if currPath == "/" {
-					if w == "rpc" || w == "ctl" || w == "proto" {
-						currPath = "/" + w
-						wqid = append(wqid, p9.Qid{Type: p9.QTFILE, Path: qidPath(currPath)})
-					} else {
-						// Error or stop? Twalk stops at first failure without erroring if partial
-						break
-					}
-				} else {
-					// Sub-files? None for now.
-					break
+					nextPath = "/" + w
 				}
+
+				// Check valid paths
+				switch nextPath {
+				case "/rpc", "/ctl", "/proto":
+					wqid = append(wqid, p9.Qid{Type: p9.QTFILE, Path: qidPath(nextPath)})
+				case "/keys":
+					wqid = append(wqid, p9.Qid{Type: p9.QTDIR, Path: qidPath(nextPath)})
+				case "/keys/signing":
+					wqid = append(wqid, p9.Qid{Type: p9.QTDIR, Path: qidPath(nextPath)})
+				case "/keys/signing/pub":
+					wqid = append(wqid, p9.Qid{Type: p9.QTFILE, Path: qidPath(nextPath)})
+				default:
+					// Unknown path - stop walk here
+					goto endWalk
+				}
+				currPath = nextPath
+			}
+		endWalk:
+
+			if len(wqid) == 0 && len(req.Wname) > 0 {
+				resp = rError(req, "file not found")
+				break
 			}
 
 			if len(wqid) == len(req.Wname) {
@@ -171,24 +186,40 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			if fid.Path == "/rpc" {
+			switch fid.Path {
+			case "/rpc":
 				str, err := s.rpc.Read(req.Fid)
 				if err != nil {
 					resp = rError(req, err.Error())
 				} else {
 					resp.Data = []byte(str)
 				}
-			} else if fid.Path == "/proto" {
-				// return proto js
-				resp.Data = []byte("var Proto = {};") // Placeholder or read from proto.go
-			} else if fid.Path == "/" {
+			case "/proto":
+				resp.Data = []byte("var Proto = {};")
+			case "/keys/signing/pub":
+				// Return base64-encoded signing public key
+				pubKey := s.keyring.PublicKey()
+				resp.Data = []byte(base64.StdEncoding.EncodeToString(pubKey))
+			case "/":
 				// Dir listing
 				if req.Offset == 0 {
 					d1 := p9.Dir{Name: "rpc", Qid: p9.Qid{Type: p9.QTFILE}}
 					d2 := p9.Dir{Name: "ctl", Qid: p9.Qid{Type: p9.QTFILE}}
 					d3 := p9.Dir{Name: "proto", Qid: p9.Qid{Type: p9.QTFILE}}
+					d4 := p9.Dir{Name: "keys", Qid: p9.Qid{Type: p9.QTDIR}}
 					resp.Data = append(d1.Bytes(), d2.Bytes()...)
 					resp.Data = append(resp.Data, d3.Bytes()...)
+					resp.Data = append(resp.Data, d4.Bytes()...)
+				}
+			case "/keys":
+				if req.Offset == 0 {
+					d := p9.Dir{Name: "signing", Qid: p9.Qid{Type: p9.QTDIR}}
+					resp.Data = d.Bytes()
+				}
+			case "/keys/signing":
+				if req.Offset == 0 {
+					d := p9.Dir{Name: "pub", Qid: p9.Qid{Type: p9.QTFILE}}
+					resp.Data = d.Bytes()
 				}
 			}
 
@@ -246,15 +277,20 @@ func rError(req *p9.Fcall, ename string) *p9.Fcall {
 }
 
 func qidPath(path string) uint64 {
-	// Simple hash or ID
-	if path == "/rpc" {
+	switch path {
+	case "/rpc":
 		return 1
-	}
-	if path == "/ctl" {
+	case "/ctl":
 		return 2
-	}
-	if path == "/proto" {
+	case "/proto":
 		return 3
+	case "/keys":
+		return 4
+	case "/keys/signing":
+		return 5
+	case "/keys/signing/pub":
+		return 6
+	default:
+		return 0
 	}
-	return 0
 }

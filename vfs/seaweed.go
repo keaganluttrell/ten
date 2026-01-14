@@ -16,6 +16,9 @@ type Backend interface {
 	Open(path string, mode uint8) (io.ReadWriteCloser, error)
 	Create(path string, perm uint32, mode uint8) (io.ReadWriteCloser, error)
 	Remove(path string) error
+	Rename(oldPath, newPath string) error
+	Chmod(path string, mode uint32) error
+	Truncate(path string, size int64) error
 }
 
 // LocalBackend implements Backend using the local filesystem.
@@ -101,6 +104,19 @@ func (b *LocalBackend) Create(path string, perm uint32, mode uint8) (io.ReadWrit
 
 func (b *LocalBackend) Remove(path string) error {
 	return os.Remove(b.toLocal(path))
+}
+
+func (b *LocalBackend) Rename(oldPath, newPath string) error {
+	return os.Rename(b.toLocal(oldPath), b.toLocal(newPath))
+}
+
+func (b *LocalBackend) Chmod(path string, mode uint32) error {
+	// Convert 9P mode to os.FileMode (lower 9 bits)
+	return os.Chmod(b.toLocal(path), os.FileMode(mode&0777))
+}
+
+func (b *LocalBackend) Truncate(path string, size int64) error {
+	return os.Truncate(b.toLocal(path), size)
 }
 
 func fileInfoToDir(fi os.FileInfo) p9.Dir {

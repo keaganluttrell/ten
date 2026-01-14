@@ -20,17 +20,19 @@ func TestNamespace_Bootstrap(t *testing.T) {
 	assert.NotNil(t, ns)
 
 	// Verify route
-	client, path := ns.Route("/dev/factotum")
-	assert.NotNil(t, client)
-	assert.Equal(t, "/", path) // Mounted at /dev/factotum, so rel path of /dev/factotum is /
+	result := ns.Route("/dev/factotum")
+	assert.NotEmpty(t, result)
+	assert.NotNil(t, result[0].Client)
+	assert.Equal(t, "/", result[0].RelPath)
 
-	client2, path2 := ns.Route("/dev/factotum/ctl")
-	assert.Equal(t, client, client2)
-	assert.Equal(t, "/ctl", path2)
+	result2 := ns.Route("/dev/factotum/ctl")
+	assert.NotEmpty(t, result2)
+	assert.Equal(t, result[0].Client, result2[0].Client)
+	assert.Equal(t, "/ctl", result2[0].RelPath)
 
 	// Verify miss
-	client3, _ := ns.Route("/other")
-	assert.Nil(t, client3)
+	result3 := ns.Route("/other")
+	assert.Empty(t, result3)
 }
 
 func TestNamespace_Build(t *testing.T) {
@@ -49,12 +51,62 @@ func TestNamespace_Build(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Route / -> VFS
-	c1, p1 := ns.Route("/lib/namespace")
-	assert.NotNil(t, c1)
-	assert.Equal(t, "/lib/namespace", p1)
+	r1 := ns.Route("/lib/namespace")
+	assert.NotEmpty(t, r1)
+	assert.NotNil(t, r1[0].Client)
+	assert.Equal(t, "/lib/namespace", r1[0].RelPath)
 
 	// Route /dev/factotum -> Factotum
-	c2, p2 := ns.Route("/dev/factotum/key")
-	assert.NotNil(t, c2)
-	assert.Equal(t, "/key", p2)
+	r2 := ns.Route("/dev/factotum/key")
+	assert.NotEmpty(t, r2)
+	assert.NotNil(t, r2[0].Client)
+	assert.Equal(t, "/key", r2[0].RelPath)
+}
+
+func TestNamespace_Union(t *testing.T) {
+	// md := NewMockDialer() // Unused
+	// Mock Clients
+	c1 := &Client{addr: "c1"}
+	c2 := &Client{addr: "c2"}
+	c3 := &Client{addr: "c3"}
+
+	ns := NewNamespace()
+	ns.Mount("/bin", c1, MREPL)
+
+	// 1. Initial State: /bin -> [c1]
+	routes := ns.Route("/bin")
+	assert.Len(t, routes, 1)
+	assert.Equal(t, c1, routes[0].Client)
+
+	// 2. Bind After: bind -a /ext/bin /bin -> [c1, c2]
+	// Need to mount /ext first to have a source?
+	// Bind(old, new). Old must resolve.
+	ns.Mount("/ext/bin", c2, MREPL)
+
+	err := ns.Bind("/ext/bin", "/bin", MAFTER)
+	assert.NoError(t, err)
+
+	routes = ns.Route("/bin")
+	assert.Len(t, routes, 2)
+	assert.Equal(t, c1, routes[0].Client)
+	assert.Equal(t, c2, routes[1].Client)
+
+	// 3. Bind Before: bind -b /home/bin /bin -> [c3, c1, c2]
+	ns.Mount("/home/bin", c3, MREPL)
+	err = ns.Bind("/home/bin", "/bin", MBEFORE)
+	assert.NoError(t, err)
+
+	routes = ns.Route("/bin")
+	assert.Len(t, routes, 3)
+	assert.Equal(t, c3, routes[0].Client)
+	assert.Equal(t, c1, routes[1].Client)
+	assert.Equal(t, c2, routes[2].Client)
+
+	// 4. Verify Resolution passing through union
+	// Route("/bin/ls") should return stack [c3+ls, c1+ls, c2+ls]
+	// (RelPaths will be /ls, /ls, /ls assuming they were mounted at root of that path)
+	lsRoutes := ns.Route("/bin/ls")
+	assert.Len(t, lsRoutes, 3)
+	assert.Equal(t, c3, lsRoutes[0].Client)
+	assert.Equal(t, "/ls", lsRoutes[0].RelPath)
 }

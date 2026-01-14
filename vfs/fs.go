@@ -136,10 +136,19 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 			}
 		}
 
-		// Root Attach
-		fid := &Fid{Path: "/"}
-		// Stat root to get Qid
-		d, err := s.backend.Stat("/")
+		// Attach to path specified in Aname (default to root)
+		attachPath := req.Aname
+		if attachPath == "" {
+			attachPath = "/"
+		}
+		// Normalize: ensure starts with /
+		if !strings.HasPrefix(attachPath, "/") {
+			attachPath = "/" + attachPath
+		}
+
+		fid := &Fid{Path: attachPath}
+		// Stat the attach path to get Qid
+		d, err := s.backend.Stat(attachPath)
 		if err != nil {
 			return rError(req, err.Error())
 		}
@@ -393,6 +402,57 @@ func (s *Session) handle(req *p9.Fcall) *p9.Fcall {
 			return rError(req, err.Error())
 		}
 		s.delFid(req.Fid)
+
+	case p9.Twstat:
+		fid, ok := s.getFid(req.Fid)
+		if !ok {
+			return rError(req, "fid not found")
+		}
+		if fid.IsAuth {
+			return rError(req, "permission denied")
+		}
+
+		// Parse the stat data
+		if len(req.Stat) < 2 {
+			return rError(req, "invalid stat data")
+		}
+		newDir, _, err := p9.UnmarshalDir(req.Stat)
+		if err != nil {
+			return rError(req, "failed to parse stat: "+err.Error())
+		}
+
+		// Get current stat for comparison
+		oldDir, err := s.backend.Stat(fid.Path)
+		if err != nil {
+			return rError(req, "stat failed: "+err.Error())
+		}
+
+		// Handle rename: if Name changed and is not empty/"~"
+		if newDir.Name != "" && newDir.Name != oldDir.Name {
+			// Rename: compute new path in same directory
+			parentPath := resolveParent(fid.Path)
+			newPath := resolveJoin(parentPath, newDir.Name)
+			if err := s.backend.Rename(fid.Path, newPath); err != nil {
+				return rError(req, "rename failed: "+err.Error())
+			}
+			fid.Path = newPath // Update FID path
+		}
+
+		// Handle chmod: if Mode changed (ignore if all 1s = "don't change")
+		if newDir.Mode != 0xFFFFFFFF && newDir.Mode != oldDir.Mode {
+			if err := s.backend.Chmod(fid.Path, newDir.Mode); err != nil {
+				return rError(req, "chmod failed: "+err.Error())
+			}
+		}
+
+		// Handle truncate: if Length changed (ignore if all 1s)
+		if newDir.Length != 0xFFFFFFFFFFFFFFFF && newDir.Length != oldDir.Length {
+			if err := s.backend.Truncate(fid.Path, int64(newDir.Length)); err != nil {
+				return rError(req, "truncate failed: "+err.Error())
+			}
+		}
+
+		resp.Type = p9.Rwstat
 
 	default:
 		return rError(req, fmt.Sprintf("unknown type: %d", req.Type))
