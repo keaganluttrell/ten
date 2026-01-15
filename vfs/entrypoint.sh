@@ -18,7 +18,7 @@ if [ "$SERVICE" = "vfs" ]; then
     # -dir: where to mount
     # -filer: address of filer
     # -filer.path: mount specific bucket or root? Root (/) is fine.
-    weed mount -dir=/data -filer="infra-seaweedfs-1:8888" -filer.path="/" &
+    weed mount -dir=/data -filer="seaweedfs:8888" -filer.path="/" &
     
     # Wait for mount to be ready
     echo "Waiting for mount /data..."
@@ -46,6 +46,8 @@ if [ "$SERVICE" = "vfs" ]; then
         echo "Populating /data/ten/vfs with content from /import..."
         mkdir -p /data/ten/vfs
         cp -rn /import/* /data/ten/vfs/
+        # Ensure required directories exist (cp -rn skips empty dirs)
+        mkdir -p /data/ten/vfs/adm/sessions
         echo "Population complete."
     fi
 fi

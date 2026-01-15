@@ -15,10 +15,12 @@ The Kernel is the **only** gateway between the Browser (Terminal) and the backen
 ## Inputs
 *   **WebSocket Connections**: From Browser Clients (Port 443/8080).
 *   **System Signals**: SIGINT/SIGTERM for graceful shutdown.
-*   **Config**: Environment variables or config file for:
-    *   `LISTEN_ADDR`: WebSocket listen address.
-    *   `VFS_ADDR`: VFS-Service address (bootstrap). Required.
-    *   `SIGNING_KEY_PATH`: Path to Factotum's public signing key.
+*   **Config**: Environment variables:
+    *   `ADDR`: TCP listen address (default `:9000`).
+    *   `WS_ADDR`: WebSocket listen address (default `:9009`).
+    *   `VFS_ADDR`: VFS-Service address in Plan 9 dial format (`tcp!vfs!9001`). Required.
+    *   `SIGNING_KEY_BASE64`: Base64-encoded Ed25519 public key for ticket verification.
+    *   `HOST_KEY_BASE64`: Base64-encoded Ed25519 private key for host authentication with VFS.
 
 ## Outputs
 *   **9P Packets**: Forwarded to dialed Services.
@@ -163,9 +165,11 @@ mount /view          tcp!ssr!9004
 ### Config (Bootstrap Only)
 | Variable | Purpose |
 | :--- | :--- |
-| `VFS_ADDR` | Address of VFS-Service (e.g., `vfs-service:9002`). Required. |
-| `LISTEN_ADDR` | WebSocket listen address (e.g., `:8080`). |
-| `SIGNING_KEY_PATH` | Path to Factotum's public signing key. |
+| `VFS_ADDR` | Address of VFS-Service in Plan 9 dial format (`tcp!vfs!9001`). Required. |
+| `ADDR` | TCP listen address (e.g., `:9000`). |
+| `WS_ADDR` | WebSocket listen address (e.g., `:9009`). |
+| `SIGNING_KEY_BASE64` | Base64-encoded Ed25519 public key for ticket verification. |
+| `HOST_KEY_BASE64` | Base64-encoded Ed25519 private key for VFS host authentication. |
 
 ---
 
@@ -221,10 +225,9 @@ Kernel: Rerror { ename="protocol_error: malformed fcall" }
 
 ---
 
-## Inner Modules
-*   `main.go`: Entry point, config loading, WebSocket listener.
-*   `session.go`: Per-connection state, FID management, namespace.
-*   `socket.go`: WebSocket frame <-> 9P message conversion.
-*   `client.go`: 9P Client (Dials backend services).
-*   `ticket.go`: Ticket parsing and signature verification.
-*   `namespace.go`: Namespace construction and path routing.
+## Code Structure
+
+> **Locality of Behavior**: All kernel logic is consolidated into `kernel.go`.
+
+*   `kernel.go`: Contains Session, Namespace, Client, Ticket validation, Socket handling.
+*   `cmd/kernel/main.go`: Entry point, config loading, starts TCP and WebSocket servers.

@@ -96,11 +96,15 @@ This document outlines the known architectural flaws, protocol gaps, and securit
         - [ ] Implement Service Worker (PWA) for app-like experience.
         - [ ] Integrate WebAuthn for passwordless login.
         - [ ] Store Auth Ticket in Browser Filesystem (OPFS).
+    - [ ] Ask elders about how we can add users to the system and how they log in.
+    - [ ] Go through all modules and review specifications and implementation.
+        - [ ] Weigh our current implementation against plan 9 and elders 
+        - [ ] Clean up all documentaion and make it uniform.
+    - [ ] Create a plan to deploy ten to a cloud server from a single docker-compose.yml file. It should run without a hitch and let the user be the admin and ready to go.
 
-[] Ask elders about what our base VFS tree should be admins.
-[] Ask elders about what our base VFS tree should be users.
-[] Ask elders about how we can add users to the system and how they log in.
-[] Go through all modules and review specifications and implementation.
-    - [ ] Weigh our current implementation against plan 9 and elders 
-    - [ ] Clean up all documentaion and make it uniform.
-- [ ] Create a plan to deploy ten to a cloud server from a single docker-compose.yml file. It should run without a hitch and let the user be the admin and ready to go.
+## Clean Up
+- [ ] Refactor Completely for Locality of Behavior across all modules.
+- [ ] Refactor Tests of Locality of Behavior in each package.
+- [ ] Let's make sure that we update ALL specifations to the new standard and remove older documentation that no longer serves us or is out of date.
+- [ ] Be sure to remove all stubs and simulations. We are taking this thing live.
+- [ ] WE NEED TO COMPLETELY REFACTOR THE FILE SYSTEM ON BOOTSTRAP. WE NEED TO REFERENCE [PLAN9_DIR_TREE.md](.global_context/PLAN9_DIR_TREE.md)

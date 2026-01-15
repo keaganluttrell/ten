@@ -10,7 +10,7 @@
               9P / TCP
                   |
         +---------v---------+
-        |   VFS Service     | <-----> NATS (Subscription)
+        |   VFS Service     |
         +---------+---------+
                   |
              Abstraction
@@ -22,47 +22,37 @@
       +------v----+ +--v----------+
       | Local Disk| |  SeaweedFS  |
       +-----------+ +-------------+
+            (dev)       (FUSE mount)
 ```
 
-This document outlines the architectural design and implementation details for the VFS-Service, which acts as the primary file server for Project Ten using the 9P2000 protocol.
-
+This document outlines the architectural design for the VFS-Service.
 
 ## Architecture
 
-The VFS Service is a 9P2000 File Server that abstracts the underlying storage (Local or SeaweedFS) via a `Backend` interface.
+The VFS Service is a 9P2000 File Server that abstracts the underlying storage via a `Backend` interface.
 
-```mermaid
-graph TD
-    A[Client (Kernel/SSR)] -- 9P/TCP --> B[vfs.Server]
-    B -- Spawn --> C[vfs.Session]
-    C -- 9P Request --> D[vfs.Handlers (fs.go)]
-    D -- Abstraction --> E[vfs.Backend Interface]
-    E -- Impl --> F[LocalBackend / SeaweedBackend]
-    F -- I/O --> G[Filesystem / S3]
-```
+> **Note**: All components are consolidated in `vfs/vfs.go` following Locality of Behavior.
 
 ## Components
 
-### 1. Server (`server.go`)
-- **Responsibility**: Listens on a TCP port and accepts incoming connections.
-- **Loop**: Spawns a new `Session` goroutine for each connection.
+### 1. Server
+- **Function**: `StartServer(addr, root, trustedKey)`
+- Listens on TCP, spawns Session goroutine per connection.
 
-### 2. Session (`fs.go`)
-- **Responsibility**: Manages the state of a single 9P connection.
+### 2. Session
 - **State**:
     - `conn`: Network connection.
-    - `fids`: Map of FID (uint32) to `*Fid` struct.
+    - `backend`: Backend interface.
+    - `trustedKey`: Ed25519 public key for host auth.
+    - `fids`: Map of FID → `*Fid`.
     - `mu`: Mutex for thread safety.
-- **Fid Lifecycle**:
-    - Tracks path and open file handles for each client FID.
-    - `Tattach` creates Root FID.
-    - `Twalk` clones FIDs and navigates paths.
-    - `Topen` opens the underlying file/directory.
-    - `Tclunk` closes handles and removes FID.
+- **Lifecycle**:
+    - `Tversion`: Negotiate protocol.
+    - `Tauth`: (Privileged users) Generate nonce, verify signature.
+    - `Tattach`: Check auth, stat root, create FID.
+    - `Twalk`/`Topen`/`Tread`/`Twrite`/`Tclunk`: Standard 9P ops.
 
-### 3. Backend Interface (`seaweed.go`)
-abstracts the storage layer to allow switching between Local FS (for dev/MVP) and SeaweedFS (prod).
-
+### 3. Backend Interface
 ```go
 type Backend interface {
     Stat(path string) (p9.Dir, error)
@@ -70,65 +60,60 @@ type Backend interface {
     Open(path string, mode uint8) (io.ReadWriteCloser, error)
     Create(path string, perm uint32, mode uint8) (io.ReadWriteCloser, error)
     Remove(path string) error
+    Rename(oldPath, newPath string) error
+    Chmod(path string, mode uint32) error
+    Truncate(path string, size int64) error
 }
 ```
 
-### 4. 9P Logic (`fs.go`)
-Implements the core 9P2000 handlers:
-- **Navigation**: `Twalk` (Resolves paths relative to current FID).
-- **Metadata**: `Tstat`, `Tcreate` (Mapping 9P modes to OS flags).
-- **I/O**: `Tread`, `Twrite` (Forwarding to `io.ReadWriteCloser`).
-- **Directory**: `Tread` on directories synthesizes `Stat` blocks for listing.
+### 4. LocalBackend
+- Implements `Backend` using `os` package calls.
+- `toLocal(path)`: Maps 9P path to local filesystem path under `Root`.
+- Includes directory traversal prevention.
 
-## Data Structures
-
-### `Fid`
-Represents an active pointer to a file in the session.
+### 5. Fid
 ```go
 type Fid struct {
-    Path      string
-    File      io.ReadWriteCloser
-    Dir       bool       // Is directory?
-    DirList   []p9.Dir  // Cached listing for Tread
-    DirOffset int       // Current offset in listing
+    Path        string
+    File        io.ReadWriteCloser
+    Dir         bool
+    DirOffset   int
+    DirList     []p9.Dir
+    // Auth state
+    IsAuth      bool
+    AuthUser    string
+    AuthNonce   []byte
+    AuthSuccess bool
 }
 ```
 
-### `Dir` (from `pkg/9p/stat.go`)
-Represents a Plan 9 directory entry (Stat).
-```go
-type Dir struct {
-    Type   uint16
-    Dev    uint32
-    Qid    Qid
-    Mode   uint32
-    Atime  uint32
-    Mtime  uint32
-    Length uint64
-    Name   string
-    Uid    string
-    Gid    string
-    Muid   string
-}
-```
+## Request Flow
 
-## Logic Flow
-
-### Request Handling Loop
-1. `Serve()` reads a 9P message (`ReadFcall`).
+1. `Serve()` reads 9P message via `p9.ReadFcall()`.
 2. Dispatches to `handle(req)`.
-3. Switch based on `req.Type`:
-   - `Tversion`: Negotiate msize.
-   - `Tattach`: Stat root, create FID 0.
-   - `Twalk`: Stat each path element, if exists -> New FID.
-   - `Topen`: Call `Backend.Open()`. If dir, `Backend.List()`.
-   - `Tread`:
-     - If Dir: Return chunk of `DirList` encoded as bytes.
-     - If File: `File.ReadAt`.
-   - `Twrite`: `File.WriteAt`.
-   - `Tcreate`: `Backend.Create()`, update FID.
-4. Returns generic `Rerror` on failure.
+3. Switch on `req.Type`:
+   - `Tversion`: Return msize, version.
+   - `Tauth`: Generate nonce, store in auth Fid.
+   - `Tattach`: Check auth (if privileged), stat attach path.
+   - `Twalk`: Stat each path element, create new Fid.
+   - `Topen`: Open file or list directory.
+   - `Tread`: Return file data or encoded Dir entries.
+   - `Twrite`: Write to file or verify auth signature.
+   - `Twstat`: Rename, chmod, or truncate.
+   - `Tclunk`/`Tremove`: Cleanup.
+4. Returns `Rerror` on failure.
 
-## Future Plans (Detailed in SPECIFICATION)
-- **Directory Watching**: Implement Blocking `Tread` for directories using NATS subscription (`watch.go`).
-- **History**: Implement `/hist/` tree traversal using `version.go` and S3 object versions.
+## Security
+
+- **Privileged users** (`kernel`, `host`, `adm`) require Ed25519 auth.
+- **Signature verification** uses `TRUSTED_KEY` environment variable.
+- Non-privileged users attach without authentication.
+
+## Dependencies
+- `pkg/9p`: 9P protocol encoding/decoding.
+- `crypto/ed25519`: Host authentication.
+
+## Future Features
+- **Blocking Tread**: Directory reads block until content changes.
+- **Tflush**: Cancel pending blocked requests.
+- **Version History**: `/n/dump/` namespace for historical snapshots.

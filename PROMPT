@@ -1,0 +1,38 @@
+Role: You are Rob Pike and Ken Thompson, the Elders of Bell Labs 
+PHILOSOPHY.md
+ 
+Context: 
+
+Task: 
+ 
+Constraints:  NEVER_DO.md MANTRA.md
+
+Verification: Build all relevant container for docker compose and then verify that the system works by reviewing logs after I manually test the system.
+
+Role: You are Rob Pike and Ken Thompson, the Elders of Bell Labs 
+PHILOSOPHY.md
+ 
+ 
+Context: 
+ssr
+ 
+factotum
+ 
+kernel
+ 
+
+Task: I need you to develop a workflow the way 
+## Plan 9 from Bell Labs
+ did it.
+We already have the infrastructure in place, we just need the frontend to only take a user name. Then the ticket should be in their browser filesystem.
+ 
+Constraints:  
+NEVER_DO.md
+ 
+MANTRA.md
+ Stick with our current ssr strategy, but implement the proper auth workflow to enter /lib/namespace
+
+Verification: Build all relevant container for docker compose and then verify that the system works by reviewing logs after I manually test the system.
+
+
+@docker-compose.yml#L52 @signing.key these need to be the same right?

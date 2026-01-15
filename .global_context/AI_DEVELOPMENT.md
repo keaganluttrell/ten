@@ -14,20 +14,21 @@ Ours is like this:
 Node
   global_context - This is the global context of the project
   inherited_context - This is the specific context from the parent as to why this node exists
-  .INTENT (Markdown)
-    This is the purpose of the node
-  .SPECIFICATION (Markdown)
-    Inputs
-    Outputs
-    Dependencies
-    Constraints
-    Inner Module Detection (This will determine the child nodes)
-  .DESIGN (Markdown)
-    This is the Diagrams, Pseudocode, and Plan to implement the specification
-  .IMPLEMENTATION (Go)
-    This is the actual code of the node
-  .TESTS (Go)
-    This is the tests for the node that verify the code meets the specification
+  local_context - This is the specific context of the node
+    INTENT (Markdown)
+      This is the purpose of the node
+    SPECIFICATION (Markdown)
+      Inputs
+      Outputs
+      Dependencies
+      Constraints
+      Inner Module Detection (This will determine the child nodes)
+    DESIGN (Markdown)
+      This is the Diagrams, Pseudocode, and Plan to implement the specification
+    IMPLEMENTATION (Go)
+      This is the actual code of the node
+    TESTS (Go)
+      This is the tests for the node that verify the code meets the specification
   ChildNodes: Node[]
   ParentNode: Node
 ```

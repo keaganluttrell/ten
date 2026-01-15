@@ -71,3 +71,18 @@
     - `/mail`: Electronic mail system.
     - `/acme`: Data and guide files for the Acme editor.
     - `/boot`: Initial connection and partition setup logic.
+
+## Starting Point
+/
+├── adm/
+│   └── users          # The Source of Truth for identity.
+├── dev/
+│   ├── user           # "Who am I?" (Read this to get the current session user).
+│   └── cons           # The Browser Console in file form. (Write to it for logs).
+├── lib/
+│   └── namespace      # The Blueprint. (The most important file in the system).
+├── mnt/
+│   ├── factotum       # The Auth Gateway. (The RPC file lives here).
+│   └── vfs            # The Storage Gateway. (Where the raw SeaweedFS data is mounted).
+├── proc/              # The "Heartbeat." (Inspection of active 9P sessions).
+└── [content]          # Binds from /mnt/vfs (e.g. /home, /sys, /posts).

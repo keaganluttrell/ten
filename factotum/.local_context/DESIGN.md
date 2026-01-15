@@ -2,51 +2,57 @@
 
 ## Architecture Overview
 
+**Principle: Locality of Behavior**
+All interactions, state management, and 9P handling live in a single file: `factotum.go`. This reduces context switching and simplifies the mental model.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Factotum                             │
-├─────────────────────────────────────────────────────────────┤
+│                   Factotum (factotum.go)                    │
 │                                                             │
-│  main.go                                                    │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  TCP Listener (:9003)                               │   │
-│  │  └─ Accept → goroutine per connection               │   │
-│  │     └─ 9P Server Loop (pkg/9p)                      │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                           │                                 │
-│           ┌───────────────┼───────────────┐                 │
-│           ▼               ▼               ▼                 │
-│      ┌─────────┐    ┌─────────┐    ┌─────────┐             │
-│      │  /rpc   │    │  /ctl   │    │ /proto  │             │
-│      │ rpc.go  │    │ ctl.go  │    │ proto.go│             │
-│      └────┬────┘    └────┬────┘    └─────────┘             │
-│           │              │                                  │
-│           ▼              ▼                                  │
-│      ┌──────────────────────────────────┐                  │
-│      │         webauthn.go              │                  │
-│      │  - BeginRegistration()           │                  │
-│      │  - FinishRegistration()          │                  │
-│      │  - BeginLogin()                  │                  │
-│      │  - FinishLogin()                 │                  │
-│      └──────────────────────────────────┘                  │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  TCP Listener (:9003)                               │   │
+│   │  └─ Accept → connection loop                        │   │
+│   └──────────────────────────┬──────────────────────────┘   │
+│                              │                              │
+│             ┌────────────────┼────────────────┐             │
+│             ▼                ▼                ▼             │
+│        [RPC Handler]    [Ctl Handler]   [File System]       │
+│        (Auth Logic)     (Key Mgmt)      (9P Dispatch)       │
+│             │                │                │             │
+│             ▼                ▼                ▼             │
+│    [WebAuthn Handler]    [Keyring]        [Sessions]        │
+│    (Ceremony Logic)      (Signing)        (State Map)       │
+│             │                │                              │
+│             └───────┬────────┘                              │
+│                     ▼                                       │
+│             [9P Client Helper]                              │
+│             (Talks to VFS)                                  │
 │                     │                                       │
-│           ┌─────────┴─────────┐                            │
-│           ▼                   ▼                            │
-│      ┌──────────┐       ┌──────────┐                       │
-│      │keyring.go│       │ticket.go │                       │
-│      │ Load/Save│       │ Generate │                       │
-│      │ PubKeys  │       │ Sign     │                       │
-│      └────┬─────┘       └────┬─────┘                       │
-│           │                  │                              │
-│           └────────┬─────────┘                             │
-│                    ▼                                        │
-│           ┌────────────────┐                               │
-│           │  VFS (9P)      │                               │
-│           │ /priv/factotum │                               │
-│           │ /priv/sessions │                               │
-│           └────────────────┘                               │
+│                     ▼                                       │
+│             ┌────────────────┐                              │
+│             │  VFS (9P)      │                              │
+│             │ /priv/factotum │                              │
+│             │ /priv/sessions │                              │
+│             └────────────────┘                              │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Internal Components (Structs)
+
+All components are defined within `factotum.go`.
+
+| Component | Responsibility |
+| :--- | :--- |
+| `Server` | Main TCP loop, 9P request dispatcher (switch statement). |
+| `RPC` | Handles `/rpc` file. Manages the "Start -> Challenge -> Write" state machine. |
+| `Ctl` | Handles `/ctl` file. Parses admin commands (`key`, `delkey`). |
+| `Keyring` | Manages the Service's Ed25519 signing key and user public keys. |
+| `WebAuthnHandler` | Wraps `go-webauthn` library. Performs FIDO2 verification. |
+| `CredentialStore` | **VFS Persistence**. Dials VFS to save/load user WebAuthn credentials. |
+| `Ticket` | Struct for the auth token. Generates and signs tickets. |
+| `Sessions` | Thread-safe map of active FIDs to Auth State. |
 
 ---
 
@@ -59,31 +65,34 @@ Browser → Kernel → Factotum
 
 1. Topen /dev/factotum/rpc (fid=1)
 2. Twrite fid=1 "start proto=webauthn role=register user=alice"
-   → rpc.go: creates session, calls webauthn.BeginRegistration()
-   → stores challenge in RAM (map[fid]*Session)
+   → Server dispatches to RPC.handleStart
+   → WebAuthnHandler.BeginRegistration
+   → Stores challenge in Sessions (RAM)
 3. Tread fid=1
-   → returns "challenge <base64>"
+   → RPC.Read checks state "challenged"
+   → Returns "challenge <base64>"
 4. Twrite fid=1 "<base64-attestation>"
-   → rpc.go: calls webauthn.FinishRegistration()
-   → keyring.go: writes pubkey to VFS /priv/factotum/alice/pubkey
-   → ticket.go: generates and signs ticket
-   → writes ticket to VFS /priv/sessions/alice/<nonce>
+   → RPC.handleWrite
+   → WebAuthnHandler.FinishRegistration
+   → CredentialStore.AddCredential (Dials VFS -> Writes /priv/factotum/alice/creds)
+   → Sets Session State = "done"
 5. Tread fid=1
-   → returns "ok ticket=/priv/sessions/alice/<nonce>"
-6. Tclunk fid=1
-   → rpc.go: cleans up session
+   → RPC.Read checks state "done"
+   → Ticket.Generate (Signs user+expiry+nonce)
+   → RPC.writeTicketToVFS (Dials VFS -> Writes /priv/sessions/alice/<nonce>)
+   → Returns "ok ticket=/priv/sessions/alice/<nonce>"
 ```
 
 ### Request Flow: Authentication
 
 ```
 1. Twrite "start proto=webauthn role=auth user=alice"
-   → keyring.go: loads pubkey from VFS /priv/factotum/alice/pubkey
-   → webauthn.BeginLogin()
+   → WebAuthnHandler calls CredentialStore.LoadUser (Dials VFS -> Reads creds)
+   → WebAuthnHandler.BeginLogin
 2. Tread → "challenge <base64>"
 3. Twrite "<base64-assertion>"
-   → webauthn.FinishLogin() (verifies signature)
-   → ticket.go: generates ticket
+   → WebAuthnHandler.FinishLogin
+   → Session State = "done"
 4. Tread → "ok ticket=/priv/sessions/alice/<nonce>"
 ```
 
@@ -94,91 +103,20 @@ Browser → Kernel → Factotum
 ### Session (RAM only)
 
 ```go
-type Sessions struct {
-    mu   sync.Mutex
-    data map[uint32]*Session  // keyed by FID
-}
-
 type Session struct {
-    FID       uint32
-    User      string
-    Role      string          // "register" | "auth"
-    State     string          // "start" | "challenged" | "done"
-    Challenge []byte          // ephemeral, never persisted
-    WebAuthn  *webauthn.SessionData
+    FID               uint32
+    User              string
+    Role              string          // "register" | "auth"
+    State             string          // "start" | "challenged" | "done"
+    SessionData       *webauthn.SessionData
 }
 ```
-
-**Concurrency:** `sync.Mutex` protects the session map. One lock for all sessions.
 
 ### Ticket (Persisted to VFS)
 
 **Format:** Space-delimited, one line.
 ```text
 <user> <expiry> <nonce> <sig>
-```
-
-**Example:**
-```text
-alice 1736723456 abc123 ZWQ...base64...==
-```
-
-```go
-type Ticket struct {
-    User   string
-    Expiry time.Time
-    Nonce  string
-    Sig    string  // base64(ed25519.Sign(user+expiry+nonce))
-}
-
-// Parse
-func ParseTicket(line string) (Ticket, error) {
-    fields := strings.Fields(line)
-    if len(fields) != 4 {
-        return Ticket{}, errors.New("invalid ticket format")
-    }
-    expiry, _ := strconv.ParseInt(fields[1], 10, 64)
-    return Ticket{
-        User:   fields[0],
-        Expiry: time.Unix(expiry, 0),
-        Nonce:  fields[2],
-        Sig:    fields[3],
-    }, nil
-}
-
-// Generate
-func (t Ticket) String() string {
-    return fmt.Sprintf("%s %d %s %s", t.User, t.Expiry.Unix(), t.Nonce, t.Sig)
-}
-```
-
----
-
-## Key Files
-
-| Module | Key Types/Functions |
-| :--- | :--- |
-| `main.go` | `main()`, `handleConn()`, 9P dispatch |
-| `rpc.go` | `RPCOpen()`, `RPCWrite()`, `RPCRead()`, session map |
-| `ctl.go` | `CtlWrite()` — parses `key` and `delkey` commands |
-| `proto.go` | `ProtoRead()` — returns `"webauthn\n"` |
-| `webauthn.go` | Wraps `go-webauthn/webauthn` library |
-| `keyring.go` | `LoadKey()`, `SaveKey()`, `DeleteKey()` — 9P client to VFS |
-| `ticket.go` | `Generate()`, `Sign()`, `Write()` — 9P client to VFS |
-
----
-
-## Startup Sequence
-
-```go
-func main() {
-    // 1. Load config (LISTEN_ADDR, VFS_ADDR)
-    // 2. Load signing key from VFS (/priv/factotum/signing.key)
-    //    - If not exists, generate and save
-    // 3. Start TCP listener
-    // 4. Start ticket pruning goroutine
-    // 5. Accept loop → spawn handleConn()
-}
 ```
 
 ---
@@ -190,16 +128,13 @@ func main() {
 | `pkg/9p` | 9P protocol encoding/decoding |
 | `github.com/go-webauthn/webauthn` | FIDO2/WebAuthn logic |
 | `crypto/ed25519` | Ticket signing |
-| `encoding/base64` | COSE key and attestation encoding |
+| `encoding/base64` | Protocol encoding |
 
 ---
 
-## Next Steps
+## Conformity Checklist
 
-1. Implement `main.go` — TCP listener and 9P dispatch.
-2. Implement `keyring.go` — 9P client to VFS for key storage.
-3. Implement `ticket.go` — Ticket generation and signing.
-4. Implement `webauthn.go` — Wrap go-webauthn library.
-5. Implement `rpc.go` — State machine for auth sessions.
-6. Implement `ctl.go` — Key management commands.
-7. Implement `proto.go` — Already scaffolded (trivial).
+- [x] **Locality of Behavior**: All logic in `factotum.go`.
+- [x] **Single Binary/Package**: No sub-packages.
+- [x] **Network Transparency**: Credentials and Tickets stored in VFS (via 9P Dial).
+- [x] **State Separation**: Sessions are RAM, State is VFS.

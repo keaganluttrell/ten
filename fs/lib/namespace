@@ -1,4 +1,0 @@
-# Ten System Namespace
-mount / tcp!vfs!9001
-mount /dev/factotum tcp!factotum!9002
-mount /view tcp!ssr!8080

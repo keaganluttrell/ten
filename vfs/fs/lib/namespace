@@ -1,0 +1,12 @@
+# Ten System Namespace
+
+# Root from VFS
+mount / tcp!vfs!9001
+
+# Auth gateway
+mount /mnt/factotum tcp!factotum!9002
+
+# View server
+mount /view tcp!ssr!8080
+
+# Note: /dev/user and /dev/cons are kernel-synthetic

@@ -7,6 +7,7 @@ services:
     ports:
       - "9333:9333" # Master
       - "8888:8888" # Filer
+    hostname: seaweedfs
     command: "server -filer -master.volumeSizeLimitMB=1024 -volume.max=0 -volume.port=8085 -filer.port=8888 -volume.minFreeSpacePercent=0"
     volumes:
       - ../.data:/data
@@ -41,7 +42,6 @@ services:
         SERVICE: kernel
     ports:
       - "9000:9000"
-      - "9009:9009"
     environment:
       # Addresses are in Plan 9 Dial Format: network!address!port
       ADDR: :9000
@@ -49,13 +49,11 @@ services:
       VFS_ADDR: tcp!vfs!9001
       FACTOTUM_ADDR: tcp!factotum!9002
       SSR_ADDR: tcp!ssr!8080
-      SIGNING_KEY_BASE64: V7qZEbmD1saFOKpG0UX5FP21kw6kh76neBxrcJWS54E=
-      HOST_KEY_BASE64: UmtcdoTKAm20D1kRA9jSGB51kb9UcOo7Jqxrvkg0n+qoVEBj26Ovn/v/lpwh0MYRbgCtmsAaf573SXx0ND3OwQ==
+      SIGNING_KEY_PATH: /adm/factotum/signing.pub
       ENV: dev
     depends_on:
       - vfs
       - factotum
-      - ssr
 
   # The File Server (Seaweed Gateway)
   vfs:
@@ -73,7 +71,7 @@ services:
       NATS_ADDR: nats:4222
       TRUSTED_KEY: qFRAY9ujr5/7/5acIdDGEW4ArZrAGn+e90l8dDQ9zsE=
     volumes:
-      - ../fs:/import:ro
+      - ../vfs/fs:/import:ro
     privileged: true
     cap_add:
       - SYS_ADMIN
@@ -98,12 +96,12 @@ services:
     ports:
       - "9002:9002"
     environment:
-      ADDR: :9002
+
       LISTEN_ADDR: :9002
-      VFS_ADDR: tcp!vfs!9001
-      DATA_ROOT: /priv/factotum
+      VFS_ADDR: vfs:9001
+      DATA_ROOT: /adm/factotum
     volumes:
-      - ../fs/priv/factotum:/priv/factotum:ro
+      - ../vfs/fs/adm/factotum:/adm/factotum
 
   # The View Server
   ssr:
@@ -118,12 +116,12 @@ services:
     environment:
       ADDR: :8080
       KERNEL_ADDR: kernel:9000
-      # SSR might need to dial Kernel or VFS to get data?
-      # Spec says: Client -> Kernel -> SSR. SSR reads /data via Kernel? 
-      # Actually SPEC says: SSR reads /data/post via 9P from VFS.
-      VFS_ADDR: tcp!vfs!9001 
+      FACTOTUM_ADDR: factotum:9002
+    depends_on:
+      - kernel
     volumes:
-      - ../client:/client:ro
+      - ../ssr/templates:/templates:ro
+      - ../ssr/static:/static:ro
 
 volumes:
   seaweed_data:

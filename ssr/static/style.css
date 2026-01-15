@@ -1,0 +1,131 @@
+:root {
+    --fg: #ccc;
+    --bg: #1a1a1a;
+    --border: #444;
+    --link: #0f0;
+    --font: monospace;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: var(--font);
+}
+
+body {
+    background: var(--bg);
+    color: var(--fg);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+header {
+    padding: 1rem 2rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.brand {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.breadcrumbs {
+    margin-top: 0.5rem;
+}
+
+.breadcrumbs a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+.breadcrumbs a:hover {
+    text-decoration: underline;
+}
+
+.breadcrumbs .sep {
+    color: var(--border);
+    margin: 0 0.25rem;
+}
+
+.container {
+    display: flex;
+    flex: 1;
+}
+
+.tree {
+    width: 250px;
+    padding: 1rem;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+}
+
+.tree ul {
+    list-style: none;
+}
+
+.tree li {
+    padding: 0.2rem 0;
+}
+
+.tree a {
+    color: var(--fg);
+    text-decoration: none;
+}
+
+.tree a:hover {
+    color: var(--link);
+}
+
+.tree .dir a {
+    color: var(--link);
+}
+
+.slot {
+    flex: 1;
+    padding: 1.5rem 2rem;
+    overflow-y: auto;
+}
+
+.slot h2 {
+    margin-bottom: 1rem;
+    font-size: 1rem;
+}
+
+.entries {
+    list-style: none;
+}
+
+.entries li {
+    padding: 0.3rem 0;
+}
+
+.entries a {
+    color: var(--fg);
+    text-decoration: none;
+}
+
+.entries a:hover {
+    color: var(--link);
+}
+
+.entries .dir {
+    color: var(--link);
+}
+
+.content {
+    padding: 1rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    border: 1px solid var(--border);
+}
+
+footer {
+    padding: 0.75rem;
+    text-align: center;
+    color: var(--border);
+    font-size: 0.8rem;
+    border-top: 1px solid var(--border);
+}

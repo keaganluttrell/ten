@@ -10,7 +10,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":9003", "Address to listen on")
-	data := flag.String("data", "/priv/factotum", "Path to data directory")
+	data := flag.String("data", "/adm/factotum", "Path to data directory")
 	vfsAddr := flag.String("vfs", "vfs:9002", "Address of VFS service")
 	flag.Parse()
 

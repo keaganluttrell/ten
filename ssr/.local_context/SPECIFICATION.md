@@ -1,87 +1,59 @@
 # Specification: SSR (Server-Side Renderer)
 
 ## Inherited Context
-From Root `SPECIFICATION.md`: The SSR is the View Layer. It is a standalone 9P Server that renders file content as HTML.
+From Root `SPECIFICATION.md`: The SSR is the View Layer. It is an HTTP Gateway that serves the App Shell and renders VFS content as HTML.
 
 ## Role in Project Ten
-SSR is a **File Browser**. It reads files and directories from VFS-Service and wraps them in a simple HTML layout. No transformation. No Markdown parsing. Plain text in, HTML out.
+SSR is the **Window** into the system. 
+1.  **App Shell**: Serves the Single Page App (or static shell) for the client.
+2.  **File Browser**: Proxies 9P file system state to HTML for standard web browsers.
 
 ---
 
 ## Core Principle
 
-**Plan 9 Simplicity**: Everything is a file. Everything is plain text. SSR just displays it.
+**Hybrid Architecture**: 
+- **View (HTTP)**: "Show me the file." (SSR renders HTML).
+- **Action (WebSocket)**: "Log me in." (Client connects to SSR `/ws`, which proxies to Kernel).
 
 ---
 
-## 9P File Interface
+## HTTP Interface
 
-SSR exposes a virtual tree at `/view` mirroring `/data` from VFS.
+SSR exposes an HTTP Server (default :8080).
 
-### Mapping
+### Routes
+| Route | Description | Behavior |
+| :--- | :--- | :--- |
+| `/` | App Shell | Serves the embedded `index.html` (Client App). |
+| `/ws` | WebSocket Proxy | Proxies raw WebSocket frames to the Kernel's TCP port (9P). |
+| `/*` | File Browser | Proxies the path to VFS and renders directory/file as HTML. |
+
+### / (Catch-All) Mapping
 ```text
-/view/        →  /data/        (directory listing)
-/view/foo     →  /data/foo     (file or directory)
-/view/bar/baz →  /data/bar/baz (nested path)
+/           →  App Shell (index.html)
+/ws         →  Kernel 9P Proxy
+/foo/bar    →  /foo/bar (9P File/Dir)
 ```
-
-*No file extensions. No transformation. 1:1 mapping.*
-
-### Behavior
-
-| Path Type | SSR Response |
-| :--- | :--- |
-| **Directory** | HTML page with list of child files/directories. |
-| **File** | HTML page with file content (plain text, pre-formatted). |
-
----
-
-## HTML Layout (Minimal)
-
-SSR wraps all responses in a simple shell:
-
-```html
-<!DOCTYPE html>
-<html>
-<head><title>{path}</title></head>
-<body>
-  <nav>{breadcrumb}</nav>
-  <main>{content}</main>
-</body>
-</html>
-```
-
-### Content Slot
-
-**For Directories:**
-```html
-<ul>
-  <li><a href="child1/">child1/</a></li>
-  <li><a href="child2">child2</a></li>
-</ul>
-```
-*Uses relative paths. Browser navigates within namespace.*
-
-**For Files:**
-```html
-<pre>{file content}</pre>
-```
+*Note: Any path not matching specific handlers is treated as a 9P path request.*
 
 ---
 
 ## Inputs
-*   **9P Packets**: From Kernel (TCP).
+*   **HTTP Requests**: GET requests from Browser.
 
 ## Outputs
-*   **HTML Bytes**: Wrapped file/directory content.
+*   **HTML**:
+    - **App Shell**: The client-side application.
+    - **File Browser**: Minimal HTML layout listing files or showing content.
 
 ---
 
 ## Data Access
 
-SSR is a **9P Client** to VFS-Service:
-*   Reads file content: `Tread /data/<path>`.
-*   Reads directory listing: `Tstat` + `Tread` for directory.
+SSR is a **9P Client** to the Kernel (or VFS directly, configured via flags).
+*   It dials the Kernel/VFS to fetch data for `/view/` requests.
+*   It does **not** use 9P for `/` (App Shell), which is embedded.
 
 ---
 
@@ -89,26 +61,21 @@ SSR is a **9P Client** to VFS-Service:
 
 | Error | Response |
 | :--- | :--- |
-| File not found | HTML page: "Not Found" |
-| VFS unavailable | HTML page: "Service Unavailable" |
+| File not found | HTTP 404 + HTML Error Page |
+| VFS unavailable | HTTP 503 + HTML Error Page |
 
 ---
 
 ## Dependencies
-*   **Internal**: `pkg/9p` (Protocol).
-*   **External**: VFS-Service (Dials for data).
-*   **Standard**: `fmt` (string formatting for layout).
+*   **Internal**: `pkg/9p` (Protocol), `kernel` (Client).
+*   **External**: Kernel/VFS (Dials for data).
+*   **Standard**: `net/http`, `html/template`.
 
 ## Constraints
-1.  **No Transformation**: Files are displayed as-is. Plain text.
-2.  **No Extensions**: `/view/foo` maps to `/data/foo`. Period.
-3.  **Read-Only**: SSR never writes.
-4.  **Stateless**: No caching in v1.
+1.  **Locality of Behavior**: All logic in minimal files (ideally one `ssr.go`).
+2.  **Read-Only View**: The HTTP interface is Read-Only. Writes happen via WebSocket (System Actions).
 
 ---
 
 ## Inner Modules
-*   `main.go`: 9P Server loop (listens on TCP).
-*   `fs.go`: 9P handlers (Twalk, Tread, Tstat).
-*   `render.go`: HTML wrapping (layout shell).
-*   `client.go`: 9P Client (Dials VFS-Service).
+*   `ssr.go`: Contains all logic (Server, Handlers, Renderers, Embedding).

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Ten: {{.Path}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="brand">Ten</div>
+        <nav class="breadcrumbs">
+            {{range $i, $b := .Breadcrumbs}}{{if $i}} <span class="sep">/</span> {{end}}<a href="{{$b.Href}}">{{$b.Name}}</a>{{end}}
+        </nav>
+    </header>
+    <div class="container">
+        <aside class="tree">
+            <ul>
+            {{range .Tree}}
+                <li class="{{if .IsDir}}dir{{else}}file{{end}}" style="padding-left: {{.Depth}}rem">
+                    <a href="{{.Href}}">{{.Name}}{{if .IsDir}}/{{end}}</a>
+                </li>
+            {{end}}
+            </ul>
+        </aside>
+        <main class="slot">
+            {{if .IsDir}}
+            <h2>{{.Path}}</h2>
+            <ul class="entries">
+                {{range .Entries}}
+                <li><a href="{{.Href}}" class="{{if .IsDir}}dir{{else}}file{{end}}">{{.Name}}{{if .IsDir}}/{{end}}</a></li>
+                {{end}}
+            </ul>
+            {{else}}
+            <h2>{{.Path}}</h2>
+            <pre class="content">{{.Content}}</pre>
+            {{end}}
+        </main>
+    </div>
+    <footer>Plan 9 for the Web</footer>
+    <script src="/static/app.js"></script>
+</body>
+</html>
